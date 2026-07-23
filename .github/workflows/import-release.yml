@@ -1,0 +1,122 @@
+# Discovery-only cutover import (authorized by @observer 07-16/17; conditions
+# met 07-21/22). Dispatch-only — importing into the live volume is always a
+# deliberate ops action, never scheduled.
+#
+# What it does, in the runbook's order:
+#   1. Volume snapshot (rollback point).
+#   2. Downloads the pinned ingest run's release artifacts, asserts each city's
+#      manifest checksum against the checksums input (canonical-set pin).
+#   3. Streams each release to the Fly machine via presigned artifact URLs and
+#      runs the checksum-verified importer (src/ingest/import.ts) against the
+#      live DB. The importer independently re-verifies the NDJSON checksum and
+#      refuses any record claiming verification (defense in depth).
+#   4. Live verify: real/sandbox counts from /v1/meta, guard behavior
+#      (place_booking on a real merchant must return fulfillment_not_live),
+#      search latency spot-check.
+name: Import release (cutover)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Ingest run ID whose release artifacts to import"
+        required: true
+      checksums:
+        description: "Canonical manifest pins: hk=<sha256>,la=<sha256>,tokyo=<sha256>"
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency: fly-deploy   # never concurrent with a deploy or another import
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      APP: agentic-commerce-registry
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Volume snapshot (rollback point)
+        run: |
+          VOL=$(flyctl volumes list -a "$APP" --json | jq -r '.[0].id')
+          echo "Snapshotting volume $VOL"
+          flyctl volumes snapshots create "$VOL" -a "$APP"
+
+      - name: Download artifacts and assert canonical checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p releases
+          for CITY in hk la tokyo; do
+            gh run download "${{ inputs.run_id }}" -n "release-$CITY" -D "releases/$CITY" -R "${{ github.repository }}"
+            MANIFEST=$(find "releases/$CITY" -name manifest.json | head -1)
+            test -n "$MANIFEST" || { echo "no manifest for $CITY"; exit 1; }
+            WANT=$(echo "${{ inputs.checksums }}" | tr ',' '\n' | grep "^$CITY=" | cut -d= -f2)
+            GOT=$(jq -r .checksum_sha256 "$MANIFEST")
+            if [ -z "$WANT" ] || [ "$WANT" != "$GOT" ]; then
+              echo "CHECKSUM PIN MISMATCH for $CITY: want=$WANT got=$GOT — refusing to import"
+              exit 1
+            fi
+            echo "$CITY pinned OK: $GOT ($(jq -r .merchant_count "$MANIFEST") merchants)"
+          done
+
+      - name: Import each city on the live machine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for CITY in hk la tokyo; do
+            ART_ID=$(gh api "repos/${{ github.repository }}/actions/runs/${{ inputs.run_id }}/artifacts" \
+              --jq ".artifacts[] | select(.name==\"release-$CITY\") | .id")
+            URL=$(curl -s -o /dev/null -w '%{redirect_url}' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ART_ID/zip")
+            test -n "$URL" || { echo "no presigned URL for $CITY"; exit 1; }
+            RELDIR=$(basename "$(dirname "$(find "releases/$CITY" -name manifest.json | head -1)")")
+            {
+              echo 'set -e'
+              echo "rm -rf /tmp/import-$CITY && mkdir -p /tmp/import-$CITY"
+              echo "curl -fsSL '$URL' -o /tmp/import-$CITY/rel.zip"
+              echo "unzip -oq /tmp/import-$CITY/rel.zip -d /tmp/import-$CITY"
+              echo "REL=\$(dirname \"\$(find /tmp/import-$CITY -name manifest.json | grep '$RELDIR' | head -1)\")"
+              echo 'echo "importing $REL"'
+              echo "cd /app && npx tsx src/ingest/import.ts --release \"\$REL\" --db /data/registry.db"
+              echo "rm -rf /tmp/import-$CITY"
+            } > script.sh
+            B64=$(base64 -w0 script.sh)
+            flyctl ssh console -a "$APP" -C "bash -c 'echo $B64 | base64 -d | bash'"
+          done
+
+      - name: Live verify
+        run: |
+          HOST="https://$(flyctl status -a "$APP" --json | jq -r .Hostname)"
+          META=$(curl -sf "$HOST/v1/meta")
+          echo "$META" | jq '{merchant_count, real_count, sandbox_count, bookable_count}'
+          REAL=$(echo "$META" | jq -r .real_count)
+          SANDBOX=$(echo "$META" | jq -r .sandbox_count)
+          [ "$REAL" -ge 168000 ] || { echo "real_count $REAL below expected 168,524"; exit 1; }
+          [ "$SANDBOX" -ge 1 ] || { echo "no sandbox merchants — integration testing would break"; exit 1; }
+          # Guard check: a real merchant must NOT be bookable (fulfillment_not_live).
+          # Compact search rows may omit `sandbox` — resolve via the full record.
+          RID=""
+          for ID in $(curl -sf "$HOST/v1/merchants?limit=10" | jq -r '.results[].merchant_id'); do
+            SB=$(curl -sf "$HOST/v1/merchants/$ID" | jq -r .sandbox)
+            if [ "$SB" = "false" ]; then RID="$ID"; break; fi
+          done
+          test -n "$RID" || { echo "could not locate a real (sandbox=false) merchant in the first 10"; exit 1; }
+          ERR=$(curl -s -X POST "$HOST/v1/bookings" -H 'content-type: application/json' \
+            -d "{\"merchant_id\":\"$RID\",\"party_size\":2,\"datetime\":\"2026-07-30T19:00\",\"reservation_name\":\"Cutover Verify\"}" | jq -r .error)
+          [ "$ERR" = "fulfillment_not_live" ] || { echo "GUARD CHECK FAILED: real merchant booking returned '$ERR'"; exit 1; }
+          # Search latency spot-check on the full corpus (10 queries, report max).
+          MAX=0
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            T=$(curl -sf -o /dev/null -w '%{time_total}' "$HOST/v1/merchants?cuisine_tags=japanese&limit=20&offset=$((i*100))")
+            MAX=$(python3 -c "print(max($MAX,$T))")
+          done
+          echo "max search latency over 10 queries: ${MAX}s"
+          python3 -c "exit(0 if $MAX <= 0.8 else 1)" || { echo "search latency above 800ms budget"; exit 1; }
+          echo "CUTOVER VERIFIED: $REAL real + $SANDBOX sandbox merchants live, guard active, latency OK" >> "$GITHUB_STEP_SUMMARY"

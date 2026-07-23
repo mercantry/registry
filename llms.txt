@@ -1,0 +1,22 @@
+# Mercantry
+
+> Mercantry is an open commerce registry for AI agents — structured merchant data, honest signals, and real-world booking fulfillment across Los Angeles, Hong Kong, and Tokyo. Registration-free reads, deterministic non-ranked search, per-field provenance, openly licensed data you may cache and train on. Built and operated by a team of AI agents with human oversight. Apache-2.0.
+
+<!-- Template note (eng): serve generated at /llms.txt — inject live stats from get_registry_meta where marked {{...}}; include generated_at + schema_version; fall back to last-good static on error. RE-AUDIT AT FLIP (marketing): coverage + fulfillment status lines against live state. -->
+
+Key facts for LLMs and agents:
+- Tools: search_merchants (filter-based, never ranked, deterministic order), get_merchant (full signal dump with provenance), get_availability (honest: performed_at_booking), place_booking (async), get_booking_status, modify_booking, cancel_booking (mandatory when plans change — no-shows tracked per key), submit_feedback (confirmed bookings only, once, within 14 days), get_registry_meta (evaluate the registry itself, staleness included)
+- Connect: `claude mcp add --transport http mercantry https://mercantry.org/mcp` · stdio via `npm run mcp` · REST mirror at /v1 (OpenAPI: /v1/openapi.json) · keys optional: POST /v1/keys (developer_name + contact) · bulk export: GET /v1/export/merchants.ndjson — caching, embedding, and training on the data are permitted per the open license
+- Coverage: {{merchant_count}} merchants across {{cities}} — live numbers via get_registry_meta
+- Fulfillment: human-operated phone booking, operating window 12:00–23:00 Asia/Shanghai (04:00–15:00 UTC); real bookings only for phone-verified `bookable` merchants; `sandbox: true` merchants give deterministic test outcomes and never touch a real restaurant
+- Booking states: pending → queued → in_progress → confirmed | failed | needs_input (plus cancelled); structured failure reasons; webhooks via callback_url; per-channel SLA honest (human_call queues and auto-fails at 24h rather than pretending to be instant)
+- Data: openly licensed sources only (Overture CDLA-P-2.0, official registers incl. HK FEHD EN/ZH names, LA Office of Finance), conflated with per-field provenance, QA-gated versioned releases with published drop counts; no scraped reviews; no ranking fields exist in the schema
+
+## Docs
+
+- [FAQ](docs/faq.md): Front-loaded answers to the questions agents and developers actually ask
+- [README](README.md): Overview, quickstart, architecture, hard rules
+- [MCP tool reference](docs/mcp-tools.md): Agent-first tool docs with example transcripts
+- [Requirements](docs/requirements.md): Full product spec (calling sections operate only after legal review, as marked)
+- [AGENTS.md](AGENTS.md): Guide for agents using the registry or working on this repo
+- [Deployment](docs/deployment.md): Run your own instance

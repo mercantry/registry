@@ -1,0 +1,81 @@
+# MCP Tool Reference
+
+Written for agents first (REQ-MCP-6): every tool returns structured JSON with a published, versioned schema (`get_registry_meta.schema_version`). Breaking changes bump the version with a 90-day deprecation window (REQ-MCP-1).
+
+Connect remotely over Streamable HTTP: `POST /mcp` on a deployed instance — live: `claude mcp add --transport http registry https://agentic-commerce-registry.fly.dev/mcp` (see [`deployment.md`](deployment.md)); optional developer key as `Authorization: Bearer reg_…` or `x-api-key`. Connect locally over stdio: `npm run mcp`. HTTP mirror of every tool lives at `/v1` (same JSON shapes; self-serve keys via `POST /v1/keys`; rate limits in `X-RateLimit-*` headers; bulk export at `GET /v1/export/merchants.ndjson`).
+
+## Read tools
+
+### `search_merchants`
+Filter-based, **never ranked**. Deterministic order: `merchant_id` ASC by default; `distance` ASC (ties broken by `merchant_id`) when `lat`/`lng` supplied with `order_by: "distance"`.
+
+Filters: `neighborhood`, `lat`+`lng`+`radius_km`, `cuisine_tags` (ANY-match), `attribute_tags` (ALL-match), `price_band_min/max`, `open_at`, `bookable_only`, `party_size`, `limit`/`offset`.
+
+```json
+{ "neighborhood": "Mission", "cuisine_tags": ["thai", "vietnamese"], "bookable_only": true, "party_size": 4 }
+→ { "order": "merchant_id", "total": 11, "results": [ { "merchant_id": "…", "name": "…", "bookable": true, … } ] }
+```
+
+### `get_merchant`
+Full signal dump: every schema field, structured hours + holiday exceptions, raw `feedback_history`, aggregate `feedback_summary`, platform-observed `operational_stats` (booking success rate, answer rate, avg confirmation time — computed from platform transactions only), and per-field `source_provenance` with timestamps. Maximal data, zero opinion.
+
+### `get_availability`
+**Honest v1 behavior:** the registry holds no live availability. Returns `availability_check: "performed_at_booking"` plus reservation policy and hours so the agent can pick a plausible slot. Availability is confirmed on the call.
+
+### `get_registry_meta`
+Coverage, bookable counts, verification/freshness stats (including how stale the data is), feedback corpus size, schema version, documented ordering rule. Lets agents evaluate the registry itself.
+
+## Booking tools (async)
+
+### `place_booking`
+```json
+{
+  "merchant_id": "…",
+  "party_size": 2,
+  "datetime": "2026-07-18T19:00",
+  "window_minutes": 60,
+  "accept_within_window": true,
+  "reservation_name": "Pat Doe",
+  "contact": "pat@example.com",
+  "special_requests": "Quiet table if possible",
+  "callback_url": "https://your-agent.example/webhooks/registry"
+}
+→ { "ok": true, "booking_id": "…", "state": "queued" }
+```
+Fulfillment is asynchronous: a call is placed to the merchant (voice agent, human takeover available). `accept_within_window: true` is the recommended default — merchant counter-offers inside `±window_minutes` confirm without a round-trip (REQ-MCP-2).
+
+### `get_booking_status`
+State machine position: `pending → queued → in_progress → confirmed | failed | needs_input` (plus `cancelled`). Structured outcomes:
+- `confirmed`: `confirmed_time`, `confirmation_code`, `merchant_instructions`
+- `failed`: `failure_reason` ∈ `no_answer | fully_booked | closed | policy_mismatch | merchant_declined | bad_data | expired_sla | needs_input_timeout`
+- `needs_input`: `needs_input_options` (merchant-offered times) + `needs_input_deadline`
+
+Pass `include_events: true` for the full audit log. Prefer `callback_url` webhooks over polling (REQ-MCP-3); polling remains supported.
+
+### `modify_booking`
+Amend a queued booking, resolve `needs_input` (`accept_option_index` confirms an offered slot immediately), or change a confirmed booking (modeled as cancel + rebook; a new `booking_id` is returned).
+
+### `cancel_booking`
+**Mandatory when plans change.** No-shows destroy merchant trust and are tracked per developer key; high no-show developers get throttled. Cancelling a confirmed booking queues a notification call to the merchant.
+
+## Feedback
+
+### `submit_feedback`
+Accepted only against a `confirmed` booking, once per booking, within 14 days (REQ-FBK-1). Structured fields first: `reservation_honored`, `seated_on_time`, `matched_description`, `would_repeat`, plus optional free text ≤ 500 chars. Served raw to all agents via `get_merchant` — never editorialized, never weighted into a platform score (REQ-FBK-3). First feedback upgrades the merchant to `transaction_verified`.
+
+## Example transcript
+
+```
+agent → search_merchants {"neighborhood":"Hayes Valley","cuisine_tags":["japanese"],"bookable_only":true,"party_size":2}
+      ← {"total":6,"order":"merchant_id","results":[…]}
+agent → get_availability {"merchant_id":"a1b2…"}
+      ← {"availability_check":"performed_at_booking","hours":[…],"reservation_policy":"accepts_reservations"}
+agent → place_booking {"merchant_id":"a1b2…","party_size":2,"datetime":"2026-07-18T19:00","window_minutes":60,"accept_within_window":true,"reservation_name":"Pat Doe"}
+      ← {"ok":true,"booking_id":"9f3c…","state":"queued"}
+        …voice agent calls the restaurant; merchant offers 19:45; inside window → auto-accepted…
+agent → get_booking_status {"booking_id":"9f3c…"}
+      ← {"state":"confirmed","confirmed_time":"2026-07-18 19:45","confirmation_code":"K7M2PQ"}
+        …after the meal…
+agent → submit_feedback {"booking_id":"9f3c…","reservation_honored":true,"seated_on_time":true,"would_repeat":true}
+      ← {"ok":true,"feedback_id":"…"}
+```

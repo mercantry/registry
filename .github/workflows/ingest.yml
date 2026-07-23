@@ -1,0 +1,98 @@
+# Data ingestion (P0): Overture base layer + official-register cross-check per
+# coverage city (LA / Tokyo / HK — set by @observer 2026-07-16).
+#
+# Runs here because workspace sessions have no egress to data portals. Releases
+# are uploaded as artifacts for review; committing a release into the repo (and
+# importing it into the live registry) stays a deliberate, human-visible step
+# (the synthetic→real cutover shipped 2026-07-22; releases import via import-release.yml).
+name: Data Ingestion
+
+on:
+  workflow_dispatch:
+    inputs:
+      city:
+        description: City to ingest
+        type: choice
+        options: [all, la, tokyo, hk]
+        default: all
+  schedule:
+    # Weekly freshness pull (REQ-ING-3 groundwork); Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      # Dynamic matrix: scheduled runs and dispatch city=all cover all three
+      # cities; a specific dispatch choice runs just that city, no no-op jobs.
+      matrix:
+        city: ${{ fromJSON((github.event_name != 'workflow_dispatch' || inputs.city == 'all') && '["la","tokyo","hk"]' || format('["{0}"]', inputs.city)) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          pip install overturemaps
+
+      - name: Extract Overture places for bbox
+        run: |
+          BBOX=$(npx tsx src/ingest/run.ts --city ${{ matrix.city }} --print-bbox)
+          echo "Extracting Overture places for ${{ matrix.city }} bbox=$BBOX"
+          mkdir -p tmp
+          overturemaps download --bbox="$BBOX" -f geojsonseq --type=place -o tmp/${{ matrix.city }}.geojsonseq
+          wc -l tmp/${{ matrix.city }}.geojsonseq
+
+      - name: Run ingestion pipeline
+        run: |
+          STAMP=$(date -u +%F)
+          npx tsx src/ingest/run.ts --city ${{ matrix.city }} \
+            --overture tmp/${{ matrix.city }}.geojsonseq \
+            --stamp "$STAMP" --out data/releases | tee ingest.log
+
+      - name: Job summary
+        run: |
+          RELEASE_DIR=$(ls -d data/releases/*-${{ matrix.city }} | tail -1)
+          echo "## Ingestion: ${{ matrix.city }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat "$RELEASE_DIR/manifest.json" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Note 004: nominate pilot-tranche candidates per city for @observer's
+      # verification pass. Emitted to the job log/summary + artifact — sessions
+      # can't download artifact blobs (egress), logs they can read.
+      - name: Nominate pilot tranche
+        run: |
+          RELEASE_DIR=$(ls -d data/releases/*-${{ matrix.city }} | tail -1)
+          npx tsx src/ingest/tranche.ts --release "$RELEASE_DIR" --size 50 --out "$RELEASE_DIR/tranche.json"
+          echo "TRANCHE_PACKET_BEGIN ${{ matrix.city }}"
+          cat "$RELEASE_DIR/tranche.json"
+          echo "TRANCHE_PACKET_END ${{ matrix.city }}"
+
+      # Cutover condition (a): per-city QA. Gate = zero well-formedness
+      # failures; register agreement + website liveness reported as evidence.
+      # Sampled records print for the war-room read layer.
+      - name: QA pass
+        run: |
+          RELEASE_DIR=$(ls -d data/releases/*-${{ matrix.city }} | tail -1)
+          echo "QA_REPORT_BEGIN ${{ matrix.city }}"
+          npx tsx src/ingest/qa.ts --release "$RELEASE_DIR" --probe-websites --out "$RELEASE_DIR/qa.json"
+          echo "QA_REPORT_END ${{ matrix.city }}"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.city }}
+          path: data/releases/
+          retention-days: 30

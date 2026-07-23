@@ -1,0 +1,47 @@
+# Fly.io deployment — the fastest path to a public HTTPS endpoint.
+#
+#   fly launch --no-deploy          # creates the app from this file
+#   fly volumes create registry_data --size 1
+#   fly secrets set OPS_TOKEN=$(openssl rand -hex 24)
+#   fly deploy
+#
+# Agents then connect to https://<app>.fly.dev/mcp — see docs/deployment.md.
+#
+# Single machine only (SQLite is single-writer): keep count at 1 and do not
+# enable machines autoscaling beyond it.
+#
+# NOTE: Fly app names are GLOBALLY unique. If app creation fails with a name
+# conflict, change `app` below (or launch with `fly launch --name <unique>`),
+# and set a repo Actions variable FLY_APP to the same name so CI deploys
+# target it.
+app = "agentic-commerce-registry"
+primary_region = "sjc"
+
+[build]
+
+[env]
+  PORT = "4100"
+  REGISTRY_DB = "/data/registry.db"
+  DEMO_ACCELERATE = "0"
+  TRUST_PROXY = "1"
+  LAUNCH_CITY = "San Francisco, CA"
+  LAUNCH_TZ = "America/Los_Angeles"
+
+[[mounts]]
+  source = "registry_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 4100
+  force_https = true
+  auto_stop_machines = "off"    # the fulfillment worker must keep running
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # 2GB: the cutover import runs a second node/tsx process next to the live app
+  # (512MB OOM-killed import run #1, exit 137; SQLite transaction rolled back
+  # cleanly). Also the right floor for serving the ~169k-row corpus. RAM bumps
+  # are pre-authorized under the standing $25/mo budget; ~$11/mo at this size.
+  memory = "2048mb"

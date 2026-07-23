@@ -1,0 +1,21 @@
+# Run the registry on any Docker host:
+#   OPS_TOKEN=$(openssl rand -hex 24) docker compose up -d
+# Then put TLS in front (Caddy/nginx/your cloud LB) and point agents at
+# https://<your-host>/mcp. See docs/deployment.md.
+services:
+  registry:
+    build: .
+    ports:
+      - "4100:4100"
+    environment:
+      OPS_TOKEN: ${OPS_TOKEN:?set OPS_TOKEN before exposing the ops console}
+      LAUNCH_CITY: ${LAUNCH_CITY:-San Francisco, CA}
+      LAUNCH_TZ: ${LAUNCH_TZ:-America/Los_Angeles}
+      DEMO_ACCELERATE: ${DEMO_ACCELERATE:-0}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+    volumes:
+      - registry-data:/data
+    restart: unless-stopped
+
+volumes:
+  registry-data:

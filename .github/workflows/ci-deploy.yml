@@ -1,0 +1,89 @@
+# CI on every PR and push; auto-deploy to Fly.io on push to main.
+#
+# Deploys are skipped (not failed) until a FLY_API_TOKEN secret exists:
+#   repo Settings → Secrets and variables → Actions → New repository secret
+# Create the token with: fly tokens create deploy
+name: CI & Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:       # docs-only pushes (business log, team board) must not redeploy prod
+      - "**.md"
+      - "docs/**"
+  pull_request:
+  workflow_dispatch:   # manual deploy/verify without a code change
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  deploy:
+    needs: test
+    # DORMANT until the ops-coordinated deploy-source handover: the private war-room
+    # repo still deploys prod. At handover, Engineering Ops flips this back to:
+    #   github.ref == 'refs/heads/main' && (push || workflow_dispatch)
+    # and retires the old repo's deploy job in the same move (single deploy source).
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency: fly-deploy   # SQLite is single-writer; never two deploys at once
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for deploy token
+        id: token
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "FLY_API_TOKEN secret is not set — skipping deploy." >> "$GITHUB_STEP_SUMMARY"
+            echo "Add it (repo Settings → Secrets → Actions) to enable auto-deploy; see docs/deployment.md." >> "$GITHUB_STEP_SUMMARY"
+            echo "have_token=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_token=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.token.outputs.have_token == 'true'
+      # Optional FLY_APP repo variable overrides the app name in fly.toml
+      # (needed when the fly.toml name was taken and the app was created
+      # under a different one).
+      - name: Deploy to Fly.io
+        if: steps.token.outputs.have_token == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_APP: ${{ vars.FLY_APP }}
+        run: flyctl deploy --remote-only ${FLY_APP:+--app "$FLY_APP"}
+      - name: Verify deployment
+        if: steps.token.outputs.have_token == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_APP: ${{ vars.FLY_APP }}
+        run: |
+          HOST="https://$(flyctl status --json ${FLY_APP:+--app "$FLY_APP"} | jq -r .Hostname)"
+          echo "Verifying $HOST"
+          curl -sf "$HOST/v1/meta" > /dev/null
+          curl -sf "$HOST/healthz" | grep -q '"ok":true'
+          curl -sf "$HOST/.well-known/mcp.json" | grep -q streamable-http
+          curl -sf -X POST "$HOST/mcp" \
+            -H 'content-type: application/json' \
+            -H 'accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | grep -q search_merchants
+          OPS=$(curl -s -o /dev/null -w '%{http_code}' "$HOST/ops/api/overview")
+          if [ "$OPS" != "401" ]; then
+            echo "Ops console answered $OPS without auth — expected 401. Is OPS_TOKEN set? (fly secrets set OPS_TOKEN=...)"
+            exit 1
+          fi
+          # Gate B: per-IP rate limiting must be active behind Fly's proxy.
+          if ! curl -sf -D- -o /dev/null "$HOST/v1/meta" | grep -qi '^x-ratelimit-limit:'; then
+            echo "X-RateLimit headers missing on /v1 — rate limiter not active behind the proxy."
+            exit 1
+          fi
+          echo "Live: $HOST/mcp (tools listed, ops console locked, rate limiter active)" >> "$GITHUB_STEP_SUMMARY"

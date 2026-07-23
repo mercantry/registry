@@ -1,0 +1,28 @@
+{
+  "name": "registry-v1",
+  "version": "0.1.0",
+  "description": "Agent-native merchant registry with universal fulfillment. V1: restaurant reservations, single city.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed": "tsx src/registry/seed.ts",
+    "start": "tsx src/api/server.ts",
+    "dev": "tsx src/api/server.ts",
+    "mcp": "tsx src/mcp/server.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "better-sqlite3": "^11.10.0",
+    "express": "^4.21.2",
+    "tsx": "^4.19.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}

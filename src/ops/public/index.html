@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Registry Ops Console</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="shell">
+  <nav class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">◎</span>
+      <div>
+        <div class="brand-name">Registry</div>
+        <div class="brand-sub">Ops Console · v1</div>
+      </div>
+    </div>
+    <a href="#/overview" data-view="overview">Overview</a>
+    <a href="#/queue" data-view="queue">Queue <span class="nav-badge" id="badge-queue"></span></a>
+    <a href="#/bookings" data-view="bookings">Bookings</a>
+    <a href="#/merchants" data-view="merchants">Merchants</a>
+    <a href="#/verification" data-view="verification">Verification <span class="nav-badge" id="badge-verification"></span></a>
+    <a href="#/complaints" data-view="complaints">Complaints <span class="nav-badge" id="badge-complaints"></span></a>
+    <a href="#/analytics" data-view="analytics">Analytics</a>
+    <div class="sidebar-foot">
+      <label class="operator-label">Operator
+        <input id="operator" placeholder="your name" spellcheck="false">
+      </label>
+      <div class="city" id="cityline"></div>
+    </div>
+  </nav>
+  <main class="main">
+    <div id="view"></div>
+  </main>
+  <aside class="drawer" id="drawer" hidden></aside>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
