@@ -16,7 +16,7 @@ import { writeRelease } from "../src/ingest/release.js";
 const HK = CITIES.hk;
 const STAMP = "2026-07-16T00:00:00Z";
 
-const freshDrops = (): OvertureDropCounts => ({ non_restaurant: 0, unnamed: 0, no_geometry: 0, out_of_bbox: 0, out_of_admin: 0, no_address: 0, invalid_phone: 0 });
+const freshDrops = (): OvertureDropCounts => ({ non_restaurant: 0, denied_category: 0, unnamed: 0, no_geometry: 0, out_of_bbox: 0, out_of_admin: 0, no_address: 0, invalid_phone: 0 });
 
 function overtureLine(over: Record<string, unknown>): string {
   return JSON.stringify({
@@ -70,7 +70,70 @@ test("overture parser: keeps restaurants, maps fields, drops the rest with count
   assert.equal(parseOvertureFeatureLine(overtureLine({ addresses: [{ freeform: "   " }] }), HK, STAMP, drops), null);
   assert.equal(parseOvertureFeatureLine(overtureLine({ addresses: [{ freeform: "Cameron Rd" }] }), HK, STAMP, drops), null);
   assert.ok(parseOvertureFeatureLine(overtureLine({ addresses: [{ freeform: "鳳德商場" }] }), HK, STAMP, drops));
-  assert.deepEqual(drops, { non_restaurant: 1, unnamed: 1, no_geometry: 1, out_of_bbox: 1, out_of_admin: 0, no_address: 3, invalid_phone: 0 });
+  assert.deepEqual(drops, { non_restaurant: 1, denied_category: 0, unnamed: 1, no_geometry: 1, out_of_bbox: 1, out_of_admin: 0, no_address: 3, invalid_phone: 0 });
+});
+
+test("category deny-list: non-venue primary drops despite a restaurant alternate; unknown primary keeps", () => {
+  const drops = freshDrops();
+  // SH run #14's actual noise classes, all of which rode in on alternates.
+  // "spas"/"accommodation": run #27's kept-side diagnostic — plurals and the
+  // hotel-class synonym Overture actually ships.
+  for (const primary of ["massage", "traditional_chinese_medicine", "art_school", "college_university", "hotel", "water_treatment_supplier", "beauty_salon", "spas", "accommodation", "hostels"]) {
+    assert.equal(
+      parseOvertureFeatureLine(overtureLine({ categories: { primary, alternate: ["restaurant"] } }), HK, STAMP, drops),
+      null,
+      `should deny primary=${primary}`,
+    );
+  }
+  assert.equal(drops.denied_category, 10);
+  // Fail-safe side: unlisted primaries, absent primaries, and any primary
+  // naming a restaurant always keep. "desserts" also proves the plural
+  // stripping can't invent a match ("dessert" isn't a deny term).
+  assert.ok(parseOvertureFeatureLine(overtureLine({ categories: { primary: "izakaya", alternate: ["restaurant"] } }), HK, STAMP, drops));
+  assert.ok(parseOvertureFeatureLine(overtureLine({ categories: { alternate: ["restaurant"] } }), HK, STAMP, drops));
+  assert.ok(parseOvertureFeatureLine(overtureLine({ categories: { primary: "hotel_restaurant", alternate: ["restaurant"] } }), HK, STAMP, drops));
+  assert.ok(parseOvertureFeatureLine(overtureLine({ categories: { primary: "desserts", alternate: ["restaurant"] } }), HK, STAMP, drops));
+  assert.equal(drops.denied_category, 10);
+});
+
+test("neighborhood hygiene: city-self labels (any script), council districts and bare codes become absent", () => {
+  const SH = CITIES.sh;
+  const shLine = (addr: Record<string, string>) =>
+    JSON.stringify({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [121.47, 31.23] },
+      properties: { names: { primary: "老弄堂" }, categories: { primary: "chinese_restaurant" }, addresses: [{ freeform: "南京东路300号", ...addr }] },
+    });
+  const drops = freshDrops();
+  // Run #14: 上海市/上海 arrive as district AND locality — both blank out.
+  assert.equal(parseOvertureFeatureLine(shLine({ district: "上海市" }), SH, STAMP, drops)?.neighborhood, "");
+  assert.equal(parseOvertureFeatureLine(shLine({ locality: "上海" }), SH, STAMP, drops)?.neighborhood, "");
+  // A junk district falls back to a real locality instead of shadowing it.
+  assert.equal(parseOvertureFeatureLine(shLine({ district: "上海市", locality: "Xuhui" }), SH, STAMP, drops)?.neighborhood, "Xuhui");
+  assert.equal(parseOvertureFeatureLine(shLine({ district: "徐汇区" }), SH, STAMP, drops)?.neighborhood, "徐汇区");
+  // LA: administrative code labels carry no neighborhood information.
+  const la = CITIES.la;
+  const laLine = (addr: Record<string, string>) =>
+    JSON.stringify({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [-118.25, 34.05] },
+      properties: { names: { primary: "Grand Central Deli" }, categories: { primary: "restaurant" }, addresses: [{ freeform: "317 S Broadway", ...addr }] },
+    });
+  assert.equal(parseOvertureFeatureLine(laLine({ district: "Council District 9" }), la, STAMP, drops)?.neighborhood, "");
+  assert.equal(parseOvertureFeatureLine(laLine({ district: "9" }), la, STAMP, drops)?.neighborhood, "");
+  assert.equal(parseOvertureFeatureLine(laLine({ district: "Los Angeles" }), la, STAMP, drops)?.neighborhood, "");
+  assert.equal(parseOvertureFeatureLine(laLine({ district: "Silver Lake" }), la, STAMP, drops)?.neighborhood, "Silver Lake");
+  // Tokyo: 東京都 as locality blanks; a ward name stays.
+  const tokyo = CITIES.tokyo;
+  const tkLine = (addr: Record<string, string>) =>
+    JSON.stringify({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [139.7, 35.68] },
+      properties: { names: { primary: "鮨処" }, categories: { primary: "japanese_restaurant" }, addresses: [{ freeform: "西新宿6丁目6-2", ...addr }] },
+    });
+  assert.equal(parseOvertureFeatureLine(tkLine({ locality: "東京都" }), tokyo, STAMP, drops)?.neighborhood, "");
+  assert.equal(parseOvertureFeatureLine(tkLine({ locality: "Shinjuku" }), tokyo, STAMP, drops)?.neighborhood, "Shinjuku");
+  assert.equal(drops.denied_category, 0);
 });
 
 test("admin-boundary filter: affirmative metadata mismatch drops, absent metadata keeps", () => {
@@ -597,6 +660,7 @@ test("la open data parser keeps LA-proper rows and maps geo", () => {
       city: "LOS ANGELES",
       location_1: { latitude: "34.05", longitude: "-118.25" },
       naics: "722511",
+      council_district: "9",
     },
     { business_name: "VALLEY CAFE", city: "BURBANK", naics: "722511" },
   ];
@@ -605,6 +669,9 @@ test("la open data parser keeps LA-proper rows and maps geo", () => {
   assert.equal(records[0].name, "JOE'S PIZZA");
   assert.equal(records[0].lat, 34.05);
   assert.equal(records[0].ref.source, "la_open_data");
+  // council_district never becomes a neighborhood label (run #27: the register
+  // fallback had filled top_neighborhoods with "Council District N").
+  assert.equal(records[0].district, null);
 });
 
 test("validation fails closed: bbox violations, fake verification claims, missing provenance", () => {

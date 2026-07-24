@@ -153,9 +153,14 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<host>/ops/api/overview   # mus
 
 - `GET /.well-known/mcp.json` — machine-readable manifest for MCP/agent
   directories and crawlers: endpoint, transport, tool list, data policy.
+- `GET /.well-known/agent-card.json` — AgentCard-shaped (A2A card schema)
+  discovery document; declares the real transports (MCP + REST), skills,
+  and live coverage. Explicitly does not claim A2A JSON-RPC support.
+- `GET /llms.txt` — the llms.txt template rendered with live stats.
+- `GET /robots.txt` — AI crawlers welcomed; `/ops/` and `/status/` disallowed.
 - `GET /healthz` — cheap probe for uptime monitors (`{"ok":true,...}`).
 
-Both are unauthenticated and included in the CI post-deploy smoke test.
+All are unauthenticated; `mcp.json` and `healthz` are in the CI post-deploy smoke test.
 
 ## Operational notes
 

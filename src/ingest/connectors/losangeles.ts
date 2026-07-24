@@ -53,7 +53,11 @@ export function parseSocrataRows(rows: SocrataRow[], retrievedAt: string): Offic
       },
       name,
       name_local: null,
-      district: row.council_district ? `Council District ${row.council_district}` : null,
+      // council_district is an administrative code, not a neighborhood — run
+      // #27's top_neighborhoods were mostly "Council District N" labels minted
+      // here and copied into empty neighborhoods by the register fallback.
+      // No neighborhood beats a fabricated one.
+      district: null,
       address: row.street_address?.trim() ?? null,
       lat: Number.isFinite(lat) ? lat : null,
       lng: Number.isFinite(lng) ? lng : null,

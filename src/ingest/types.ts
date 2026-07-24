@@ -35,6 +35,13 @@ export interface CityConfig {
    */
   adminExclude?: { country?: string; region?: string }[];
   /**
+   * Names that mean the city itself, in every script/variant Overture ships
+   * (e.g. Shanghai: 上海 / 上海市). A locality or district equal to one of
+   * these carries no sub-city information and never becomes a neighborhood
+   * label (see cleanNeighborhoodLabel). Equality-only, like adminExclude.
+   */
+  cityAliases?: string[];
+  /**
    * Language tags for Wikidata label/alias enrichment (empty = skip the
    * connector — LA needs no local-name layer).
    */
@@ -168,7 +175,7 @@ export interface ReleaseManifest {
   alias_enrichment: AliasEnrichmentStats | null;
   /** Schema defaults carried with NO source behind them — consumers must not read these as facts. */
   unsourced_defaults: string[];
-  dropped: { non_restaurant: number; unnamed: number; no_geometry: number; out_of_bbox: number; out_of_admin: number; no_address: number; invalid_phone: number };
+  dropped: { non_restaurant: number; denied_category: number; unnamed: number; no_geometry: number; out_of_bbox: number; out_of_admin: number; no_address: number; invalid_phone: number };
   checksum_sha256: string;
   ndjson_file: string;
 }

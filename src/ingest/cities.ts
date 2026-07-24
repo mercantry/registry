@@ -15,6 +15,7 @@ export const CITIES: Record<CityKey, CityConfig> = {
     country: "US",
     timezone: "America/Los_Angeles",
     bbox: { west: -118.6682, south: 33.7037, east: -118.1553, north: 34.3373 },
+    cityAliases: ["City of Los Angeles", "LA"],
     officialSources: ["la_open_data"],
     wikidataLanguages: [],
   },
@@ -38,6 +39,7 @@ export const CITIES: Record<CityKey, CityConfig> = {
     ],
     // Per-ward licence ledgers discovered via the TMG open-data catalog's CKAN
     // API — coverage is partial-by-construction (wards publish independently).
+    cityAliases: ["東京", "東京都", "Tokyo-to", "Tokyo Metropolis"],
     officialSources: ["tokyo_opendata"],
     wikidataLanguages: ["ja"],
   },
@@ -52,6 +54,7 @@ export const CITIES: Record<CityKey, CityConfig> = {
     // never match FEHD. HK itself is its own ISO country (records carry
     // country "HK"), so a plain country rule is safe.
     adminExclude: [{ country: "CN" }],
+    cityAliases: ["香港", "Hong Kong SAR", "HK"],
     officialSources: ["fehd_hk"],
     // The local-alias gap city (69% local_name): Cantonese + Traditional
     // Chinese label variants all carry usable names.
@@ -68,6 +71,10 @@ export const CITIES: Record<CityKey, CityConfig> = {
     // releases build + QA, but import to the live endpoint is gated on the
     // China legal read (PIPL/DSL).
     bbox: { west: 121.2, south: 31.0, east: 121.8, north: 31.45 },
+    // Run #14's tranche/QA read: Overture ships 上海市/上海 as locality AND
+    // district here, so the English-only self-city check left the city itself
+    // as most records' "neighborhood".
+    cityAliases: ["上海", "上海市", "Shanghai Shi", "Shanghai Municipality", "Shanghai, Shanghai Shi"],
     officialSources: [],
     // Wikidata (CC0) is the one clean local-name lever for the register-less
     // city (board 07-23: Simplified-Chinese names).

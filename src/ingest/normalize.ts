@@ -166,6 +166,66 @@ export function stableMerchantId(cityKey: string, name: string, lat: number, lng
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
+/**
+ * Non-venue business classes that must not enter the corpus even when an
+ * Overture alternate category says "restaurant" (SH run #14's QA sample:
+ * massage parlors, TCM clinics, an art academy, a water-treatment supplier and
+ * a hotel all rode in on alternates). Matched against the PRIMARY category's
+ * snake_case tokens only — affirmative deny, so an absent or unrecognized
+ * primary keeps the record, same fail-safe shape as adminExclude.
+ */
+const DENIED_PRIMARY_CATEGORY_TOKENS = new Set([
+  // health / medical
+  "hospital", "clinic", "doctor", "dentist", "dental", "pharmacy", "medical",
+  "medicine", "acupuncture", "chiropractor", "veterinarian", "veterinary",
+  // beauty / bodywork
+  "massage", "spa", "sauna", "salon", "barber", "beauty", "nail",
+  // education
+  "school", "academy", "college", "university", "kindergarten", "education",
+  // lodging (a hotel that houses a restaurant is a lodging record; the
+  // restaurant, when Overture knows it, is its own record)
+  "hotel", "motel", "hostel", "lodging", "accommodation",
+  // industrial / B2B
+  "supplier", "wholesaler", "manufacturer", "factory", "distributor",
+  "equipment", "treatment",
+]);
+
+/**
+ * True when the primary category affirmatively names a non-venue business
+ * class. A primary containing "restaurant" is never denied, whatever its other
+ * tokens ("hotel_restaurant" is a restaurant).
+ */
+export function isDeniedPrimaryCategory(primary: string | null | undefined): boolean {
+  const p = primary?.trim().toLowerCase() ?? "";
+  if (!p || p.includes("restaurant")) return false;
+  // Overture pluralizes freely ("spas", "hostels" — run #27 kept-side showed
+  // "spas" riding past the singular term), so each token also matches with one
+  // trailing "s" stripped. Only a curated term can fire either way, so the
+  // stripped form stays fail-safe ("fitness" → "fitnes" matches nothing).
+  return p.split("_").some(
+    (token) => DENIED_PRIMARY_CATEGORY_TOKENS.has(token) ||
+      (token.endsWith("s") && DENIED_PRIMARY_CATEGORY_TOKENS.has(token.slice(0, -1))),
+  );
+}
+
+/**
+ * Neighborhood label hygiene: a label that is the city itself (Overture ships
+ * "上海市"/"上海" as locality *and* district for Shanghai — the English-only
+ * self-city check missed every CJK form), an administrative code ("Council
+ * District 9" in LA), or a bare number carries no sub-city information.
+ * Junk becomes absent — never a fabricated neighborhood (honesty rule).
+ */
+export function cleanNeighborhoodLabel(label: string | null | undefined, city: CityConfig): string {
+  const trimmed = label?.trim() ?? "";
+  if (!trimmed) return "";
+  const norm = trimmed.normalize("NFKC").toLowerCase();
+  const selfNames = [city.city.split(",")[0], ...(city.cityAliases ?? [])];
+  if (selfNames.some((s) => s.normalize("NFKC").toLowerCase() === norm)) return "";
+  if (/^council district\s*\d*$/.test(norm)) return "";
+  if (/^[\d\s\-#./]+$/.test(norm)) return "";
+  return trimmed;
+}
+
 const GENERIC_CATEGORY_TOKENS = new Set(["restaurant", "eat_and_drink", "food", ""]);
 
 /**

@@ -53,6 +53,7 @@ test("GET / serves the landing page with the canonical sentence and connect snip
   assert.match(html, /href="\/llms\.txt"/);
   assert.match(html, /href="\/v1\/openapi\.json"/);
   assert.match(html, /href="\/\.well-known\/mcp\.json"/);
+  assert.match(html, /href="\/\.well-known\/agent-card\.json"/);
   assert.match(html, /github\.com\/mercantry\/registry/);
 });
 

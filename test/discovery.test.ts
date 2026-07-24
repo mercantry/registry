@@ -106,3 +106,56 @@ test("/healthz reports ok with a live database", async () => {
   assert.equal(h.ok, true);
   assert.equal(h.merchants, 1);
 });
+
+test("/.well-known/agent-card.json is a structurally valid AgentCard that never claims A2A JSON-RPC", async () => {
+  const res = await fetch(`${realBase()}/.well-known/agent-card.json`);
+  assert.equal(res.status, 200);
+  const card = await res.json();
+  assert.equal(card.protocolVersion, "0.3.0");
+  assert.equal(card.name, "Mercantry");
+  assert.equal(card.version, "1.0.0");
+  // Transport honesty: the endpoint speaks MCP + REST, and the card must say
+  // so instead of advertising a JSON-RPC surface that does not exist.
+  assert.ok(card.url.endsWith("/mcp"));
+  assert.equal(card.preferredTransport, "MCP");
+  assert.deepEqual(
+    card.additionalInterfaces.map((i: { transport: string }) => i.transport),
+    ["MCP", "REST"],
+  );
+  assert.match(card.description, /does NOT implement the A2A JSON-RPC protocol/);
+  // No A2A protocol capability is implemented, so none may be claimed.
+  assert.deepEqual(card.capabilities, { streaming: false, pushNotifications: false, stateTransitionHistory: false });
+  assert.equal(card.supportsAuthenticatedExtendedCard, false);
+  assert.deepEqual(
+    card.skills.map((s: { id: string }) => s.id),
+    ["merchant_discovery", "booking", "verified_feedback"],
+  );
+  for (const s of card.skills) {
+    assert.ok(s.name && s.description && Array.isArray(s.tags) && Array.isArray(s.examples), `skill ${s.id} complete`);
+  }
+});
+
+test("agent card coverage + liveness lines derive from live state (real corpus)", async () => {
+  const card = await (await fetch(`${realBase()}/.well-known/agent-card.json`)).json();
+  const discovery = card.skills.find((s: { id: string }) => s.id === "merchant_discovery");
+  assert.match(discovery.description, /3 real merchants across Hong Kong \(2\), Tokyo \(1\)/);
+  assert.ok(!discovery.description.includes("San Francisco"), "sandbox seed city never enters public copy");
+  // Booking guard honesty: human_call is not in liveChannels, so the card says so.
+  const booking = card.skills.find((s: { id: string }) => s.id === "booking");
+  assert.match(booking.description, /NOT live yet/);
+  assert.match(booking.description, /fulfillment_not_live/);
+});
+
+test("agent card on a sandbox-only registry says so instead of claiming coverage", async () => {
+  const card = await (await fetch(`${base()}/.well-known/agent-card.json`)).json();
+  const discovery = card.skills.find((s: { id: string }) => s.id === "merchant_discovery");
+  assert.match(discovery.description, /sandbox-only preview/);
+  assert.match(discovery.description, /no real corpus imported yet/);
+});
+
+test("discovery surfaces cross-link the agent card", async () => {
+  const manifest = await (await fetch(`${realBase()}/.well-known/mcp.json`)).json();
+  assert.ok(manifest.agent_card.endsWith("/.well-known/agent-card.json"));
+  const robots = await (await fetch(`${realBase()}/robots.txt`)).text();
+  assert.match(robots, /agent-card\.json/);
+});

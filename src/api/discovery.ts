@@ -5,6 +5,11 @@
  *    directories and crawlers: where the endpoint is, what tools exist,
  *    what the data policy is. Honest by design — coverage and data status
  *    are derived from the live database, never hardcoded copy.
+ *  - GET /.well-known/agent-card.json  AgentCard-shaped discovery document
+ *    (A2A card schema) for agent directories that crawl this path. Honest
+ *    about transport: this service speaks MCP + REST, NOT the A2A JSON-RPC
+ *    protocol — the card says so instead of pretending, and every A2A
+ *    protocol capability is declared false.
  *  - GET /llms.txt              the llms.txt template (repo root) rendered
  *    with live stats. Never 500s: serves the last-good render on error.
  *  - GET /robots.txt            AI crawlers explicitly welcome — the corpus
@@ -118,6 +123,7 @@ export function discoveryRouter(db: Database): express.Router {
         rate_limit_per_minute: config.mcp.rateLimitPerMinute,
       },
       llms_txt: `${base}/llms.txt`,
+      agent_card: `${base}/.well-known/agent-card.json`,
       data_policy: {
         ranking: "none — deterministic, documented ordering only",
         reviews: "transaction-verified agent feedback only; never scraped, never scored",
@@ -142,6 +148,91 @@ export function discoveryRouter(db: Database): express.Router {
     });
   });
 
+  // AgentCard (A2A card schema, protocol version 0.3.0) at the well-known
+  // path agent directories crawl. The A2A transport enum is open, so the
+  // card declares the transports that actually exist ("MCP", "REST") rather
+  // than claiming JSONRPC support this service does not have; an A2A-only
+  // client will skip us cleanly instead of failing confusingly. Coverage and
+  // liveness lines derive from the live DB/config — same honesty rules as
+  // every other discovery surface (a city never appears until it is served,
+  // and the booking skill says fulfillment is not live while it isn't).
+  router.get("/.well-known/agent-card.json", (req, res) => {
+    const base = baseUrl(req);
+    const meta = registryMeta(db);
+    const cities = cityCoverage(db);
+    const realCount = cities.reduce((s, r) => s + r.merchant_count, 0);
+    const humanCallLive = config.fulfillment.liveChannels.includes("human_call");
+    const win = config.fulfillment.operatorWindow;
+
+    const coverageLine = realCount
+      ? `Current coverage: ${fmt(realCount)} real merchants across ${cities.map((r) => `${r.city} (${fmt(r.merchant_count)})`).join(", ")}, plus ${fmt(meta.sandbox_count)} sandbox test merchants.`
+      : `Current coverage: sandbox-only preview (${fmt(meta.sandbox_count)} deterministic test merchants) — no real corpus imported yet.`;
+    const bookingLiveness = humanCallLive
+      ? `Real-merchant fulfillment is human-operated (${win.start}-${win.end} ${win.timezone}); bookings queue honestly and auto-fail at the published channel SLA rather than pretending to be instant.`
+      : "Real-merchant fulfillment is NOT live yet: place_booking on a real merchant returns the structured rejection 'fulfillment_not_live'. The full booking loop is testable end-to-end against sandbox merchants (deterministic outcomes, never a real phone call).";
+
+    res.json({
+      protocolVersion: "0.3.0",
+      name: "Mercantry",
+      description:
+        "Mercantry is an open commerce registry for AI agents — structured merchant data, honest signals, and real-world booking fulfillment. " +
+        "Interoperability, honestly: this service speaks MCP (streamable-http) and REST/OpenAPI — it does NOT implement the A2A JSON-RPC protocol. " +
+        "This card is published for discovery; connect via the MCP endpoint in `url` or the REST interface in `additionalInterfaces`.",
+      url: `${base}/mcp`,
+      preferredTransport: "MCP",
+      additionalInterfaces: [
+        { url: `${base}/mcp`, transport: "MCP" },
+        { url: `${base}/v1`, transport: "REST" },
+      ],
+      provider: { organization: "Mercantry", url: base },
+      version: config.schemaVersion,
+      documentationUrl: REPO_URL,
+      // A2A protocol capabilities — none are implemented, so none are claimed.
+      // (Booking webhooks DO exist, but via place_booking's callback_url, not
+      // the A2A push-notification protocol these flags refer to.)
+      capabilities: { streaming: false, pushNotifications: false, stateTransitionHistory: false },
+      securitySchemes: {},
+      security: [],
+      defaultInputModes: ["application/json"],
+      defaultOutputModes: ["application/json"],
+      skills: [
+        {
+          id: "merchant_discovery",
+          name: "Merchant discovery",
+          description:
+            "Filter-based search over the restaurant registry (search_merchants), full per-merchant signal dumps with per-field provenance and raw transaction-verified feedback (get_merchant), and honest registry self-description including staleness (get_registry_meta). Never ranked: deterministic, documented ordering only. Reads are free and keyless. " +
+            coverageLine,
+          tags: ["search", "restaurants", "merchant-data", "provenance", "no-ranking", "open-data"],
+          examples: [
+            "Find vegetarian-friendly restaurants near Shinjuku that are open Friday 7pm",
+            "Get every signal the registry holds on merchant X, including feedback history",
+          ],
+        },
+        {
+          id: "booking",
+          name: "Reservation booking (async)",
+          description:
+            "Async table reservations: get_availability (honest v1 — availability is confirmed at booking time, not held live), place_booking, get_booking_status (poll or callback_url webhooks), modify_booking, cancel_booking. Bookings are accepted only for phone-verified bookable merchants. " +
+            bookingLiveness,
+          tags: ["booking", "reservations", "async", "sandbox"],
+          examples: [
+            "Book a table for 4 at a sandbox merchant tomorrow 19:00 and poll until confirmed",
+            "Cancel a booking the human no longer wants",
+          ],
+        },
+        {
+          id: "verified_feedback",
+          name: "Transaction-verified feedback",
+          description:
+            "submit_feedback: report how a confirmed reservation actually went — accepted only against a confirmed booking_id, once per booking, within 14 days. Served raw to all agents via get_merchant; never editorialized, never scored.",
+          tags: ["feedback", "verified", "trust"],
+          examples: ["Report that the merchant honored the reservation but seated the party late"],
+        },
+      ],
+      supportsAuthenticatedExtendedCard: false,
+    });
+  });
+
   // Live-rendered llms.txt with a never-500 guarantee: cache the last good
   // render (60s TTL) and serve it if a fresh render fails for any reason.
   let llmsCache: { body: string; at: number } | undefined;
@@ -163,7 +254,7 @@ export function discoveryRouter(db: Database): express.Router {
     res.type("text/plain; charset=utf-8").send(
       `# Mercantry — open commerce registry for AI agents. AI crawlers are welcome:
 # the data is openly licensed and exists to be ingested, cached, and trained on.
-# Machine-readable surfaces: ${base}/llms.txt · ${base}/.well-known/mcp.json · ${base}/v1/openapi.json
+# Machine-readable surfaces: ${base}/llms.txt · ${base}/.well-known/mcp.json · ${base}/.well-known/agent-card.json · ${base}/v1/openapi.json
 
 User-agent: GPTBot
 User-agent: ClaudeBot
