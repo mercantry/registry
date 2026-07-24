@@ -1,12 +1,12 @@
 /**
  * Versioned data releases: merchants.ndjson + manifest.json. The release —
- * not the database — is the unit of review, diffing, and rollback
- * — NDJSON is sorted by merchant_id upstream, so
+ * not the database — is the unit of review, diffing, and rollback.
+ * NDJSON is sorted by merchant_id upstream, so
  * releases diff cleanly and checksums are reproducible.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { CityConfig, ReleaseManifest, ReleaseMerchant, SourceStats } from "./types.js";
+import type { AliasEnrichmentStats, CityConfig, ReleaseManifest, ReleaseMerchant, SourceStats } from "./types.js";
 import { sha256Hex } from "./normalize.js";
 import { UNSOURCED_DEFAULTS, type CrosscheckStats } from "./conflate.js";
 import type { ValidationReport } from "./validate.js";
@@ -18,6 +18,7 @@ export interface WriteReleaseOptions {
   merchants: ReleaseMerchant[];
   sources: SourceStats[];
   crosscheck: CrosscheckStats | null;
+  aliasEnrichment: AliasEnrichmentStats | null;
   dropped: ReleaseManifest["dropped"];
   report: ValidationReport;
 }
@@ -37,6 +38,7 @@ export async function writeRelease(opts: WriteReleaseOptions): Promise<{ dir: st
     sources: opts.sources,
     field_coverage: opts.report.field_coverage,
     official_crosscheck: opts.crosscheck,
+    alias_enrichment: opts.aliasEnrichment,
     unsourced_defaults: UNSOURCED_DEFAULTS,
     dropped: opts.dropped,
     checksum_sha256: sha256Hex(ndjson),

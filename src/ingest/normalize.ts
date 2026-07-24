@@ -59,6 +59,13 @@ export function toE164(raw: string | null | undefined, country: CityConfig["coun
     if (hasPlus && digits.startsWith("852") && digits.length === 11) return `+${digits}`;
     if (!hasPlus && digits.length === 8) return `+852${digits}`;
   }
+  if (country === "CN") {
+    // Mainland: mobiles are 11 digits starting 1; landlines carry a 0-prefixed
+    // area code (021 Shanghai) that drops in E.164.
+    if (hasPlus && digits.startsWith("86") && digits.length >= 12 && digits.length <= 13) return `+${digits}`;
+    if (!hasPlus && digits.length === 11 && digits.startsWith("1")) return `+86${digits}`;
+    if (!hasPlus && digits.startsWith("0") && (digits.length === 11 || digits.length === 12)) return `+86${digits.slice(1)}`;
+  }
   return null;
 }
 
@@ -79,6 +86,50 @@ export function isLocatableAddress(address: string): boolean {
 
 export function inBbox(lat: number, lng: number, bbox: CityConfig["bbox"]): boolean {
   return lat >= bbox.south && lat <= bbox.north && lng >= bbox.west && lng <= bbox.east;
+}
+
+/**
+ * Region value → comparable name form. Overture's region field is free text in
+ * practice (validated on runs #24/#25: HK spillover says "Guangdong"/"广东省",
+ * Japan says "神奈川県"/"Kanagawa-ken"/"Kanagawa Prefecture" — ISO codes barely
+ * appear), so rules carry name aliases and both sides normalize: NFKC,
+ * lowercase, and one trailing prefecture-suffix stripped (県 / -ken /
+ * " prefecture"). Equality only — no substring matching.
+ */
+function normalizeRegionName(region: string): string {
+  return region
+    .normalize("NFKC")
+    .toLowerCase()
+    .trim()
+    .replace(/(県|[\s-]?ken|\s+(prefecture|province))$/, "")
+    .trim();
+}
+
+/**
+ * Admin-boundary spillover check (see CityConfig.adminExclude). Affirmative
+ * matches only: a rule fires when every field it specifies equals the record's
+ * metadata; absent record metadata can never fire a rule. A rule region
+ * matches either as an ISO 3166-2 code — a bare subdivision ("14") is
+ * canonicalized with the record's own country when present ("JP" + "14" →
+ * "JP-14"), otherwise it can't be interpreted — or as a normalized name
+ * (see normalizeRegionName).
+ */
+export function matchesAdminExclude(
+  country: string | null | undefined,
+  region: string | null | undefined,
+  rules: NonNullable<CityConfig["adminExclude"]>,
+): boolean {
+  const c = country?.trim().toUpperCase() || null;
+  const rawRegion = region?.trim() || null;
+  let iso = rawRegion?.toUpperCase() ?? null;
+  if (iso && !iso.includes("-")) iso = c ? `${c}-${iso}` : null;
+  const name = rawRegion ? normalizeRegionName(rawRegion) : null;
+  return rules.some((rule) => {
+    if (rule.country === undefined && rule.region === undefined) return false;
+    if (rule.country !== undefined && c !== rule.country.toUpperCase()) return false;
+    if (rule.region === undefined) return true;
+    return iso === rule.region.toUpperCase() || (name !== null && name === normalizeRegionName(rule.region));
+  });
 }
 
 export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {

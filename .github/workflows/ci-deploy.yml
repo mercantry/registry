@@ -29,10 +29,10 @@ jobs:
 
   deploy:
     needs: test
-    # DORMANT until the ops-coordinated deploy-source handover: the private war-room
-    # repo still deploys prod. At handover, Engineering Ops flips this back to:
-    #   github.ref == 'refs/heads/main' && (push || workflow_dispatch)
-    # and retires the old repo's deploy job in the same move (single deploy source).
+    # DORMANT by design: production deploys from the development repository,
+    # and this repo receives automated mirror pushes — this job must never
+    # auto-deploy or the two sources would race. Dispatch-only, as a manual
+    # fallback for Engineering Ops.
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency: fly-deploy   # SQLite is single-writer; never two deploys at once

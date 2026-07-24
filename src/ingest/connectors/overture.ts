@@ -9,7 +9,7 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CityConfig, StagedPlace } from "./../types.js";
-import { cuisineFromCategory, inBbox, isLocatableAddress, toE164 } from "./../normalize.js";
+import { cuisineFromCategory, inBbox, isLocatableAddress, matchesAdminExclude, toE164 } from "./../normalize.js";
 
 const OVERTURE_DETAIL = "overturemaps.org places theme, bbox extract via overturemaps CLI";
 
@@ -22,7 +22,7 @@ interface OvertureProps {
   confidence?: number;
   phones?: string[];
   websites?: string[];
-  addresses?: { freeform?: string; locality?: string; district?: string; region?: string }[];
+  addresses?: { freeform?: string; locality?: string; district?: string; region?: string; country?: string }[];
 }
 
 export interface OvertureDropCounts {
@@ -30,8 +30,25 @@ export interface OvertureDropCounts {
   unnamed: number;
   no_geometry: number;
   out_of_bbox: number;
+  out_of_admin: number;
   no_address: number;
   invalid_phone: number;
+}
+
+/**
+ * country/region distributions of kept vs admin-dropped records — a run-log
+ * diagnostic (header-alignment-dump precedent): if Overture encodes the
+ * metadata differently than the exclude rules assume, the kept-side
+ * distribution shows it instead of the filter silently no-opping.
+ */
+export interface AdminFilterStats {
+  kept: Map<string, number>;
+  dropped: Map<string, number>;
+}
+
+function bumpAdminStat(map: Map<string, number>, addr: { region?: string; country?: string } | undefined) {
+  const key = `${addr?.country?.trim() || "?"}/${addr?.region?.trim() || "?"}`;
+  map.set(key, (map.get(key) ?? 0) + 1);
 }
 
 function isRestaurant(props: OvertureProps): boolean {
@@ -45,6 +62,7 @@ export function parseOvertureFeatureLine(
   city: CityConfig,
   retrievedAt: string,
   drops: OvertureDropCounts,
+  adminStats?: AdminFilterStats,
 ): StagedPlace | null {
   const trimmed = line.replace(/^\x1e/, "").trim(); // RFC 8142 record separator
   if (!trimmed) return null;
@@ -73,11 +91,21 @@ export function parseOvertureFeatureLine(
     return null;
   }
 
+  const addr0 = props.addresses?.[0];
+  if (city.adminExclude?.length) {
+    if (matchesAdminExclude(addr0?.country, addr0?.region, city.adminExclude)) {
+      drops.out_of_admin++;
+      if (adminStats) bumpAdminStat(adminStats.dropped, addr0);
+      return null;
+    }
+    if (adminStats) bumpAdminStat(adminStats.kept, addr0);
+  }
+
   // Runs #6/#7 QA gate findings: empty addresses, then street-only Latin
   // addresses ("Cameron Rd") — both below the served-corpus bar. The connector
   // enforces the same isLocatableAddress predicate the QA gate expects, so a
   // release can't carry records its own QA would call malformed.
-  const addr = props.addresses?.[0];
+  const addr = addr0;
   if (!isLocatableAddress(addr?.freeform ?? "")) {
     drops.no_address++;
     return null;
@@ -130,12 +158,18 @@ export async function loadOverture(
   city: CityConfig,
   retrievedAt: string,
 ): Promise<{ places: StagedPlace[]; drops: OvertureDropCounts }> {
-  const drops: OvertureDropCounts = { non_restaurant: 0, unnamed: 0, no_geometry: 0, out_of_bbox: 0, no_address: 0, invalid_phone: 0 };
+  const drops: OvertureDropCounts = { non_restaurant: 0, unnamed: 0, no_geometry: 0, out_of_bbox: 0, out_of_admin: 0, no_address: 0, invalid_phone: 0 };
   const places: StagedPlace[] = [];
+  const adminStats: AdminFilterStats = { kept: new Map(), dropped: new Map() };
   const rl = createInterface({ input: createReadStream(path, "utf8"), crlfDelay: Infinity });
   for await (const line of rl) {
-    const place = parseOvertureFeatureLine(line, city, retrievedAt, drops);
+    const place = parseOvertureFeatureLine(line, city, retrievedAt, drops, adminStats);
     if (place) places.push(place);
+  }
+  if (city.adminExclude?.length) {
+    const fmt = (m: Map<string, number>) =>
+      [...m.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}:${n}`).join(" ") || "(none)";
+    console.log(`[${city.key}] admin filter country/region — dropped ${fmt(adminStats.dropped)} · kept ${fmt(adminStats.kept)}`);
   }
   return { places, drops };
 }

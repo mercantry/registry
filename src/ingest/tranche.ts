@@ -1,8 +1,8 @@
 /**
  * Pilot-tranche nomination (note 004): rank a release's merchants by
- * data-quality signals and emit candidates for @observer's human-operator
+ * data-quality signals and emit candidates for the operator's human
  * verification pass. Nominates, never decides — the tranche pick (which
- * neighborhood, how many) is @observer's, per the board.
+ * neighborhood, how many) is the operator's call.
  *
  *   tsx src/ingest/tranche.ts --release data/releases/2026-07-16-la [--size 50] [--neighborhood "Silver Lake"]
  *
@@ -16,7 +16,9 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ReleaseManifest, ReleaseMerchant } from "./types.js";
 
-const OFFICIAL_SOURCES = new Set(["fehd_hk", "la_open_data", "tokyo_open_data"]);
+// Keys as the connectors emit them ("tokyo_opendata" — fixed 07-23; the old
+// "tokyo_open_data" meant Tokyo candidates never scored their register match).
+export const OFFICIAL_SOURCES = new Set(["fehd_hk", "la_open_data", "tokyo_opendata"]);
 
 export interface TrancheCandidate {
   merchant_id: string;

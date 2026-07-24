@@ -13,7 +13,7 @@
  *    (CI probes; a live site is existence evidence, a dead one a flag).
  *
  * What it does NOT claim: ground-truth field accuracy. That comes from
- * @observer's verification calls (REQ-ING-2) on the pilot tranche. The sampled
+ * the operator's verification calls (REQ-ING-2) on the pilot tranche. The sampled
  * records are printed for a human/agent read as the final sanity layer.
  *
  * Sampling is deterministic (sorted corpus, fixed stride from the release
@@ -25,7 +25,14 @@ import { E164_RE, inBbox } from "./normalize.js";
 import { CITIES } from "./cities.js";
 import type { CityKey, ReleaseMerchant } from "./types.js";
 
-const OFFICIAL_SOURCES = new Set(["fehd_hk", "la_open_data", "tokyo_open_data", "wikidata"]);
+/**
+ * Government registers only — the source keys the connectors actually emit.
+ * (Fixed 07-23: this said "tokyo_open_data", but the connector emits
+ * "tokyo_opendata" — Tokyo register evidence was silently reading as 0.
+ * Wikidata is deliberately NOT here: CC0 labels corroborate names, but only a
+ * government register counts as register evidence.)
+ */
+export const OFFICIAL_SOURCES = new Set(["fehd_hk", "la_open_data", "tokyo_opendata"]);
 
 export interface QaReport {
   city: string;
@@ -58,8 +65,15 @@ export function sampleMerchants(merchants: ReleaseMerchant[], size: number, seed
   return sample;
 }
 
-function wellFormednessFailure(m: ReleaseMerchant, cityKey: CityKey): string | null {
-  if (!m.name.trim() || m.name.trim().length < 2) return "name empty/too short";
+export function wellFormednessFailure(m: ReleaseMerchant, cityKey: CityKey): string | null {
+  const name = m.name.trim();
+  if (!name) return "name empty";
+  // A single CJK character is a complete restaurant name (run #20: 杉, 紡 —
+  // legitimate Tokyo venues); a single Latin char/digit is not. Same CJK
+  // legitimacy carve-out the address bar (isLocatableAddress) already makes.
+  if (name.length < 2 && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(name)) {
+    return "name empty/too short";
+  }
   if (/^[\p{P}\p{S}\p{N}\s]+$/u.test(m.name)) return "name is only punctuation/digits";
   const addr = m.location.address.trim();
   if (!addr) return "address empty";

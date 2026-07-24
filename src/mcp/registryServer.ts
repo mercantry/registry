@@ -146,7 +146,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
     {
       title: "Place a booking (async)",
       description:
-        "Request a table reservation. Returns booking_id with state 'queued' immediately; fulfillment is asynchronous (a call is placed to the merchant). Poll get_booking_status or supply callback_url for webhooks. If the merchant counter-offers a time within window_minutes and accept_within_window=true, it is auto-accepted (recommended). Otherwise the booking pauses in needs_input for you to resolve via modify_booking.",
+        "Request a table reservation. Returns booking_id with state 'queued' immediately; fulfillment is asynchronous (a call is placed to the merchant). Poll get_booking_status or supply callback_url for webhooks. If the merchant counter-offers a time within window_minutes and accept_within_window=true, it is auto-accepted (recommended). Otherwise the booking pauses in needs_input for you to resolve via modify_booking. Merchants on the human_call channel are fulfilled by a human operator during the operator window published in get_registry_meta — those bookings queue until worked (up to the channel SLA), so book ahead rather than for the next hour.",
       inputSchema: {
         merchant_id: z.string(),
         party_size: z.number().int().min(1),

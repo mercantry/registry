@@ -19,7 +19,8 @@ One process (`src/api/server.ts`) serves everything:
 | `/mcp` | MCP over Streamable HTTP — **the product** | ✅ yes |
 | `/v1/*` | REST mirror, self-serve keys, bulk export | ✅ yes |
 | `/status/:booking_id` | booking status page for end humans | ✅ yes |
-| `/`, `/ops/api/*` | Ops Console (merchant editing, call takeover, opt-out) | 🔒 **never unauthenticated** |
+| `/` | landing page (live stats, honesty block, JSON-LD) | ✅ yes |
+| `/ops/`, `/ops/api/*` | Ops Console (merchant editing, call takeover, opt-out) | 🔒 **never unauthenticated** |
 
 Set **`OPS_TOKEN`** before anything internet-facing starts. When set, the
 console and its API require HTTP Basic auth (any username, the token as the

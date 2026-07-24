@@ -10,6 +10,7 @@ import { now } from "../db/index.js";
 import { getMerchantRow, addProvenance } from "../registry/merchants.js";
 import { logEvent, transition } from "./stateMachine.js";
 import { bookingStatus, fulfillmentEligibility, resolveFromCall } from "./bookings.js";
+import { sweepOperatorNotifications } from "./operatorNotify.js";
 import { startVoiceCall, type CallOutcome } from "./voiceSim.js";
 
 type Row = Record<string, any>;
@@ -44,6 +45,7 @@ export function tick(db: Database) {
   sweepNeedsInputTimeouts(db);
   sweepSlaBreaches(db);
   dispatchWebhooks(db);
+  sweepOperatorNotifications(db);
 }
 
 function dispatchQueued(db: Database) {

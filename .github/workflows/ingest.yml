@@ -1,5 +1,5 @@
 # Data ingestion (P0): Overture base layer + official-register cross-check per
-# coverage city (LA / Tokyo / HK — set by @observer 2026-07-16).
+# coverage city (see src/ingest/cities.ts).
 #
 # Runs here because workspace sessions have no egress to data portals. Releases
 # are uploaded as artifacts for review; committing a release into the repo (and
@@ -13,7 +13,7 @@ on:
       city:
         description: City to ingest
         type: choice
-        options: [all, la, tokyo, hk]
+        options: [all, la, tokyo, hk, sh]
         default: all
   schedule:
     # Weekly freshness pull (REQ-ING-3 groundwork); Monday 06:00 UTC.
@@ -28,7 +28,9 @@ jobs:
       # Dynamic matrix: scheduled runs and dispatch city=all cover all three
       # cities; a specific dispatch choice runs just that city, no no-op jobs.
       matrix:
-        city: ${{ fromJSON((github.event_name != 'workflow_dispatch' || inputs.city == 'all') && '["la","tokyo","hk"]' || format('["{0}"]', inputs.city)) }}
+        # sh releases build + QA like the rest, but are NOT imported to the live
+        # endpoint until the China legal read clears (board 07-23).
+        city: ${{ fromJSON((github.event_name != 'workflow_dispatch' || inputs.city == 'all') && '["la","tokyo","hk","sh"]' || format('["{0}"]', inputs.city)) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -69,7 +71,7 @@ jobs:
           cat "$RELEASE_DIR/manifest.json" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      # Note 004: nominate pilot-tranche candidates per city for @observer's
+      # Note 004: nominate pilot-tranche candidates per city for the operator's
       # verification pass. Emitted to the job log/summary + artifact — sessions
       # can't download artifact blobs (egress), logs they can read.
       - name: Nominate pilot tranche
@@ -82,7 +84,7 @@ jobs:
 
       # Cutover condition (a): per-city QA. Gate = zero well-formedness
       # failures; register agreement + website liveness reported as evidence.
-      # Sampled records print for the war-room read layer.
+      # Sampled records print for a final human/agent read.
       - name: QA pass
         run: |
           RELEASE_DIR=$(ls -d data/releases/*-${{ matrix.city }} | tail -1)

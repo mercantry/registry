@@ -36,7 +36,6 @@ Config env vars: `PORT`, `REGISTRY_DB`, `LAUNCH_CITY`, `LAUNCH_TZ`, `DEMO_ACCELE
 - `src/orchestrator/` — booking state machine, retry/SLA worker, pluggable voice driver (`voiceSim.ts`)
 - `src/ops/public/` — ops console SPA
 - `docs/requirements.md` — the spec; REQ-* IDs referenced in code comments resolve here
-- `marketing/` — strategy, metrics, launch material
 
 ### Invariants — do not break these in any change
 

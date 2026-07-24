@@ -56,6 +56,40 @@ export const config = {
      * When the human-operator flow (note 004) launches, add "human_call" here.
      */
     liveChannels: [] as readonly string[],
+    /**
+     * Note 004: per-channel terminal SLA. REQ-FUL-6's 4h default predates a
+     * sole part-time human operator — human_call bookings queue until worked,
+     * with an honest 24h auto-fail (`expired_sla`). Channels not listed here
+     * use terminalSlaMs. Production: 24 h. Demo: 20 min.
+     */
+    channelSlaMs: {
+      human_call: accelerate ? 20 * 60_000 : 24 * 60 * 60_000,
+    } as Record<string, number>,
+    /**
+     * Note 004: the human operator's declared availability (set
+     * 07-16): 12:00–23:00 Beijing time. Surfaced to agents via
+     * get_registry_meta so expectations match a part-time human operator.
+     */
+    operatorWindow: {
+      timezone: "Asia/Shanghai",
+      start: "12:00",
+      end: "23:00",
+    },
+  },
+
+  /**
+   * Note 004: "somehow let me know about new reservation requests" — one GitHub
+   * issue per real human_call booking in a private ops repo; the
+   * operator gets push/email via GitHub notifications, the issue closes on
+   * terminal state. Repo/token unset = notifications disabled (dev/test).
+   * Secrets live in Fly secrets, never in git.
+   */
+  operatorNotify: {
+    /** "owner/name" repo that receives reservation-request issues. */
+    repo: process.env.NOTIFY_GITHUB_REPO || undefined,
+    token: process.env.NOTIFY_GITHUB_TOKEN || undefined,
+    /** Also notify for sandbox human_call bookings — pipeline testing only. */
+    includeSandbox: process.env.NOTIFY_INCLUDE_SANDBOX === "1",
   },
 
   feedback: {

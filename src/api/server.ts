@@ -7,7 +7,8 @@
  *                 bulk export, rate-limit headers — REQ-MCP-4/5, REQ-DST-2)
  *  - /ops/api/*   internal Ops Console API (§6.5) — gated by OPS_TOKEN when set
  *  - /status/:id  minimal booking status page for end humans (§3)
- *  - /            Ops Console SPA — gated by OPS_TOKEN when set
+ *  - /            public landing page (crawlable fact page, live stats)
+ *  - /ops/        Ops Console SPA — gated by OPS_TOKEN when set
  *
  * The fulfillment worker runs in this process. Start: npm run dev
  * Internet exposure: docs/deployment.md
@@ -47,6 +48,7 @@ import { appendTranscript } from "../orchestrator/voiceSim.js";
 import { feedbackHistory, submitFeedback } from "../feedback/feedback.js";
 import { mcpRouter } from "../mcp/http.js";
 import { discoveryRouter } from "./discovery.js";
+import { landingRouter } from "./landing.js";
 import { publicStats } from "./stats.js";
 import { keyFromHeaders, keysRouter, resolveApiKey } from "./keys.js";
 import { buildOpenApi, v1Index } from "./openapi.js";
@@ -140,6 +142,9 @@ app.use("/mcp", mcpRouter(db));
 
 /* Public discovery: /.well-known/mcp.json + /healthz (crawlable by design). */
 app.use(discoveryRouter(db));
+
+/* Public landing page at / (crawlable by design — robots.txt still shields /ops/). */
+app.use(landingRouter(db));
 
 /* --------------------------------------------- */
 /* Agent-facing REST (mirror of the MCP surface)  */
@@ -534,7 +539,10 @@ app.post("/ops/api/demo/place-booking", (req, res) => {
 /* --------------- */
 /* Ops Console SPA */
 /* --------------- */
-app.use(opsAuth, express.static(join(here, "..", "ops", "public")));
+// Served under /ops/ (the root is the public landing page). Inherits opsAuth
+// from the /ops mount above; asset paths in index.html are relative, so they
+// resolve to /ops/app.js etc. without changes.
+app.use("/ops", express.static(join(here, "..", "ops", "public")));
 
 // Gate B: on Fly (FLY_APP_NAME is set by the runtime) the console must never
 // come up open — fail the boot instead of serving merchant editing + live-call
@@ -554,7 +562,8 @@ app.listen(config.apiPort, () => {
   console.log(`Registry v1 running:
   Agent MCP        http://localhost:${config.apiPort}/mcp  (Streamable HTTP — remote agents connect here)
   Agent REST API   http://localhost:${config.apiPort}/v1   (mirror of the MCP tools)
-  Ops Console      http://localhost:${config.apiPort}/     ${config.opsToken ? "(OPS_TOKEN auth ON)" : "(OPEN — set OPS_TOKEN before exposing to the internet)"}
+  Landing page     http://localhost:${config.apiPort}/     (public fact page)
+  Ops Console      http://localhost:${config.apiPort}/ops/ ${config.opsToken ? "(OPS_TOKEN auth ON)" : "(OPEN — set OPS_TOKEN before exposing to the internet)"}
   Status pages     http://localhost:${config.apiPort}/status/:booking_id
   Local MCP        npm run mcp   (stdio; shares the same registry DB)
   City: ${config.launchCity} · demo acceleration ${config.demoAccelerate ? "ON" : "off"}`);

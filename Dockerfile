@@ -20,6 +20,8 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 COPY tsconfig.json ./
 COPY src ./src
+# llms.txt is the render template for GET /llms.txt (live stats injected at serve time).
+COPY llms.txt ./
 
 ENV NODE_ENV=production \
     PORT=4100 \

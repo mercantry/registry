@@ -175,6 +175,7 @@ test("chain disambiguation: register address picks the right branch; no address 
     confidence: 0.9,
     merged_refs: [{ source: "overture", source_id: id, detail: "t", retrieved_at: "2026-07-17T00:00:00Z" }],
     official: [] as any[],
+    wikidata: [] as any[],
   });
   const a = branch("b-1", "15 Wellington St");
   const b = branch("b-2", "77 Canton Rd");

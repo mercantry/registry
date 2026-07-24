@@ -81,7 +81,9 @@ CREATE TABLE IF NOT EXISTS bookings (
   confirmation_code TEXT,
   attempts         INTEGER NOT NULL DEFAULT 0,
   next_attempt_at  TEXT,                    -- retry scheduling (REQ-FUL-6)
-  sla_deadline     TEXT NOT NULL,           -- terminal state due by (REQ-FUL-6)
+  sla_deadline     TEXT NOT NULL,           -- terminal state due by (REQ-FUL-6; per-channel, note 004)
+  notify_issue_number INTEGER,              -- note 004: GitHub issue notifying the operator (NULL = none yet)
+  notify_issue_closed INTEGER NOT NULL DEFAULT 0,  -- note 004: issue closed on terminal state
   created_at       TEXT NOT NULL,
   updated_at       TEXT NOT NULL
 );

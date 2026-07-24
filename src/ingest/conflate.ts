@@ -3,7 +3,8 @@
  * official-register rows onto them (existence confirmation + local names).
  * Merge rules favor completeness, never invent data.
  */
-import type { CityConfig, OfficialRecord, ProvenanceEntry, ReleaseMerchant, StagedPlace } from "./types.js";
+import type { AliasEnrichmentStats, CityConfig, OfficialRecord, ProvenanceEntry, ReleaseMerchant, StagedPlace } from "./types.js";
+import type { WikidataPlace } from "./connectors/wikidata.js";
 import { addressesMatch, gridKey, haversineKm, namesMatch, neighborKeys, normalizeName, stableMerchantId } from "./normalize.js";
 
 const DUP_DISTANCE_KM = 0.15;
@@ -13,6 +14,8 @@ const OFFICIAL_MATCH_KM = 0.5;
 export interface ConflatedPlace extends StagedPlace {
   merged_refs: StagedPlace["ref"][];
   official: OfficialRecord[];
+  /** Wikidata matches, with the aliases each one actually contributed. */
+  wikidata: { ref: StagedPlace["ref"]; added: string[] }[];
 }
 
 /** Same name within ~150 m → one place. Higher-confidence record wins field conflicts. */
@@ -36,7 +39,7 @@ export function dedupeStaged(places: StagedPlace[]): ConflatedPlace[] {
       if (merged) break;
     }
     if (!merged) {
-      const entry: ConflatedPlace = { ...place, merged_refs: [place.ref], official: [] };
+      const entry: ConflatedPlace = { ...place, merged_refs: [place.ref], official: [], wikidata: [] };
       out.push(entry);
       const key = gridKey(place.lat, place.lng);
       buckets.set(key, [...(buckets.get(key) ?? []), entry]);
@@ -105,6 +108,52 @@ export function enrichWithOfficial(places: ConflatedPlace[], official: OfficialR
   return stats;
 }
 
+/**
+ * Anchor Wikidata restaurant items to conflated places and add their
+ * local-language labels/aliases. Same conservatism as the register join:
+ * name match (en label OR any local label, against the place's name AND
+ * aliases — register enrichment runs first, so its aliases are match keys
+ * here) + geo within OFFICIAL_MATCH_KM, unique matches only. A wrong alias on
+ * the wrong branch is worse than a missing one.
+ */
+export function enrichWithWikidata(places: ConflatedPlace[], items: WikidataPlace[]): AliasEnrichmentStats {
+  const byName = new Map<string, ConflatedPlace[]>();
+  const index = (key: string, place: ConflatedPlace) => {
+    if (!key) return;
+    const list = byName.get(key) ?? [];
+    if (!list.includes(place)) byName.set(key, [...list, place]);
+  };
+  for (const place of places) {
+    index(normalizeName(place.name), place);
+    for (const alias of place.aliases) index(normalizeName(alias), place);
+  }
+
+  const stats: AliasEnrichmentStats = { matched: 0, ambiguous: 0, unmatched: 0, aliases_added: 0 };
+  for (const item of items) {
+    const candidates = new Set<ConflatedPlace>();
+    for (const name of [item.name_en, ...item.names_local]) {
+      if (!name) continue;
+      for (const place of byName.get(normalizeName(name)) ?? []) candidates.add(place);
+    }
+    const near = [...candidates].filter((p) => haversineKm(p.lat, p.lng, item.lat, item.lng) <= OFFICIAL_MATCH_KM);
+    if (near.length === 0) {
+      stats.unmatched++;
+      continue;
+    }
+    if (near.length > 1) {
+      stats.ambiguous++;
+      continue;
+    }
+    const place = near[0];
+    const added = item.names_local.filter((n) => n !== place.name && !place.aliases.includes(n));
+    place.aliases.push(...added);
+    place.wikidata.push({ ref: item.ref, added });
+    stats.matched++;
+    stats.aliases_added += added.length;
+  }
+  return stats;
+}
+
 /** Fields carried as schema defaults with no source behind them (declared in the manifest). */
 export const UNSOURCED_DEFAULTS = ["price_band", "reservation_policy", "max_party_size", "fulfillment_channel"];
 
@@ -147,6 +196,15 @@ export function toReleaseMerchants(city: CityConfig, places: ConflatedPlace[]): 
           recorded_at: rec.ref.retrieved_at,
         });
       }
+    }
+    for (const wd of place.wikidata) {
+      if (wd.added.length === 0) continue;
+      provenance.push({
+        field: "aliases",
+        source: wd.ref.source,
+        detail: `local-language name from Wikidata (id: ${wd.ref.source_id})`,
+        recorded_at: wd.ref.retrieved_at,
+      });
     }
 
     return {

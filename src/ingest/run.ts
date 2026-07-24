@@ -17,10 +17,11 @@ import { loadOverture } from "./connectors/overture.js";
 import { fetchFehd, parseFehdXml } from "./connectors/fehd.js";
 import { fetchLaOpenData, parseSocrataRows } from "./connectors/losangeles.js";
 import { fetchTokyoRegister, parseTokyoLicenceCsv } from "./connectors/tokyo.js";
-import { dedupeStaged, enrichWithOfficial, toReleaseMerchants, type CrosscheckStats } from "./conflate.js";
+import { fetchWikidataPlaces, parseWikidataResults } from "./connectors/wikidata.js";
+import { dedupeStaged, enrichWithOfficial, enrichWithWikidata, toReleaseMerchants, type CrosscheckStats } from "./conflate.js";
 import { validateRelease } from "./validate.js";
 import { writeRelease } from "./release.js";
-import { SOURCE_LICENSES, type OfficialRecord, type SourceStats } from "./types.js";
+import { SOURCE_LICENSES, type AliasEnrichmentStats, type OfficialRecord, type SourceStats } from "./types.js";
 
 function parseArgs(argv: string[]) {
   const args: { city?: string; overture?: string; stamp?: string; out: string; printBbox: boolean; skipOfficial: boolean; officialFiles: Map<string, string> } = {
@@ -111,6 +112,25 @@ async function main() {
     }
   }
 
+  // Wikidata local-name enrichment AFTER the register pass — register aliases
+  // become match keys. Fail-open (ABR lesson): a WDQS outage degrades to
+  // today's release, loudly, never blocks it.
+  let aliasEnrichment: AliasEnrichmentStats | null = null;
+  if (!args.skipOfficial && city.wikidataLanguages.length > 0) {
+    console.log(`[${city.key}] wikidata local-name enrichment (${city.wikidataLanguages.join(", ")})`);
+    try {
+      const file = args.officialFiles.get("wikidata");
+      const items = file
+        ? parseWikidataResults(JSON.parse(await readFile(file, "utf8")), retrievedAt)
+        : await fetchWikidataPlaces(city, retrievedAt);
+      aliasEnrichment = enrichWithWikidata(conflated, items);
+      sources.push({ source: "wikidata", ...SOURCE_LICENSES.wikidata, records: items.length, retrieved_at: retrievedAt });
+      console.log(`[${city.key}] wikidata: ${JSON.stringify(aliasEnrichment)}`);
+    } catch (err) {
+      console.warn(`[${city.key}] wikidata enrichment unavailable — release proceeds without it. ${String(err)}`);
+    }
+  }
+
   const merchants = toReleaseMerchants(city, conflated);
   const report = validateRelease(city, merchants);
   if (report.errors.length > 0) {
@@ -127,6 +147,7 @@ async function main() {
     merchants,
     sources,
     crosscheck,
+    aliasEnrichment,
     dropped: drops,
     report,
   });

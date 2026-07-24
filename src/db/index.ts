@@ -32,6 +32,8 @@ function migrate(d: Database.Database) {
   };
   addColumn("api_keys", "created_ip", "created_ip TEXT"); // Gate B: per-IP mint limits
   addColumn("merchants", "sandbox", "sandbox INTEGER NOT NULL DEFAULT 0"); // booking guard: real imported merchants default 0 (discovery-only)
+  addColumn("bookings", "notify_issue_number", "notify_issue_number INTEGER"); // note 004: operator-notification issue
+  addColumn("bookings", "notify_issue_closed", "notify_issue_closed INTEGER NOT NULL DEFAULT 0");
   // Cutover: pre-guard synthetic seeds (the SF demo corpus, created before the
   // sandbox column existed) are test data and must never be served flagged as
   // real merchants. They become the explicit sandbox set; the real three-city

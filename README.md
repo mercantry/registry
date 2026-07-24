@@ -40,7 +40,8 @@ npm run dev        # seeds a sandbox corpus on first boot; everything in one pro
 |---|---|
 | MCP (Streamable HTTP) | `http://localhost:4100/mcp` |
 | REST mirror + OpenAPI | `http://localhost:4100/v1` |
-| Ops Console (gate with `OPS_TOKEN`) | `http://localhost:4100/` |
+| Landing page (public fact page) | `http://localhost:4100/` |
+| Ops Console (gate with `OPS_TOKEN`) | `http://localhost:4100/ops/` |
 | Booking status pages | `http://localhost:4100/status/:booking_id` |
 
 ```bash

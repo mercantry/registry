@@ -508,6 +508,16 @@ export function registryMeta(db: Database) {
     availability_check: "performed_at_booking",
     booking_policy:
       "Sandbox merchants (sandbox:true) are bookable end-to-end for integration testing. Real merchants are discovery-only: place_booking returns fulfillment_not_live until human-operator fulfillment launches.",
+    fulfillment: {
+      live_channels: config.fulfillment.liveChannels,
+      human_call: {
+        live: config.fulfillment.liveChannels.includes("human_call"),
+        operator: "human",
+        operator_window: `${config.fulfillment.operatorWindow.start}–${config.fulfillment.operatorWindow.end} ${config.fulfillment.operatorWindow.timezone}`,
+        sla_hours: Math.round((config.fulfillment.channelSlaMs.human_call / 3600_000) * 10) / 10,
+        note: "human_call bookings are fulfilled by a human operator phoning the merchant. They queue until worked — expect resolution within the operator window, with an honest auto-fail (expired_sla) at the SLA.",
+      },
+    },
     ordering_rule:
       "search_merchants returns deterministic order: merchant_id ASC by default, distance ASC (ties by merchant_id) when geo filter present. The registry never ranks.",
   };

@@ -34,6 +34,8 @@ $("#operator").value = localStorage.getItem("operator") || "";
 $("#operator").addEventListener("change", (e) => localStorage.setItem("operator", e.target.value));
 
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
+const telHref = (phone) => (phone ? `tel:${String(phone).replace(/[^+\d]/g, "")}` : null);
+const dialLink = (phone) => (phone ? `<a class="dial-link" href="${esc(telHref(phone))}">${esc(phone)}</a>` : "—");
 const fmtReq = (t) => (t ? t.replace("T", " ").slice(0, 16) : "—");
 const chip = (state, extra = "") => `<span class="chip ${esc(state)} ${extra}">${esc(String(state).replace(/_/g, " "))}</span>`;
 
@@ -178,6 +180,7 @@ async function bookingDrawer(id, live = false) {
       <h3>${esc(b.merchant.name)}</h3>
       <p class="sub">${chip(b.state, b.state === "in_progress" ? "live" : "")} &nbsp; booking <span class="mono">${esc(id.slice(0, 8))}</span>${b.failure_reason ? ` · ${esc(b.failure_reason)}` : ""}</p>
       <div class="kv">
+        <div class="k">Phone</div><div>${dialLink(b.merchant.phone_primary)}${b.merchant.neighborhood ? ` <span class="note">· ${esc(b.merchant.neighborhood)}</span>` : ""}</div>
         <div class="k">Requested</div><div>${esc(fmtReq(b.requested_time))} · party ${b.party_size} · ±${b.window_minutes}m ${b.accept_within_window ? "(auto-accept)" : ""}</div>
         <div class="k">Name</div><div>${esc(b.reservation_name)}</div>
         ${b.special_requests ? `<div class="k">Requests</div><div>${esc(b.special_requests)}</div>` : ""}
@@ -196,6 +199,7 @@ async function bookingDrawer(id, live = false) {
 
       <div class="actions">
         ${b.state === "queued" && b.merchant.fulfillment_channel === "human_call" ? `<button class="primary" id="claimBtn">Claim call (dial merchant)</button>` : ""}
+        ${isLive && (call.taken_over || call.channel === "human_call") && b.merchant.phone_primary ? `<a class="btn-dial" href="${esc(telHref(b.merchant.phone_primary))}">📞 Dial ${esc(b.merchant.phone_primary)}</a>` : ""}
         ${isLive && !call.taken_over && call.channel === "voice_agent" ? `<button class="danger" id="takeoverBtn">Take over call</button>` : ""}
       </div>
 
@@ -380,6 +384,7 @@ async function merchantDrawer(id) {
     <p class="sub">${m.opt_out ? chip("opted_out") : m.bookable ? chip("confirmed").replace(">confirmed<", ">bookable<") : chip("pending").replace(">pending<", ">not bookable<")}
       &nbsp;${esc(m.verification_status.replace(/_/g, " "))} · ${esc(m.location.neighborhood)}</p>
     <div class="kv">
+      <div class="k">Phone</div><div>${dialLink(m.phone_primary)}</div>
       <div class="k">Address</div><div>${esc(m.location.address)}</div>
       <div class="k">Cuisine</div><div>${esc(m.cuisine_tags.join(", "))}</div>
       <div class="k">Attributes</div><div class="pill-row">${m.attribute_tags.map((t) => `<span class="pill">${esc(t.replace(/_/g, " "))}</span>`).join("")}</div>
@@ -483,7 +488,7 @@ async function verification() {
         <tr>
           <td>${esc(m.name)}</td>
           <td>${esc(m.neighborhood)}</td>
-          <td class="mono">${esc(m.phone_primary || "—")}</td>
+          <td class="mono">${dialLink(m.phone_primary)}</td>
           <td class="note">${m.phone_verified_at ? esc(fmtTime(m.phone_verified_at)) : "never"}</td>
           <td><button class="small" data-id="${esc(m.merchant_id)}">Open record</button></td>
         </tr>`).join("")}</tbody>

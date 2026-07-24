@@ -43,6 +43,15 @@ export function fulfillmentEligibility(merchant: Row): { ok: boolean; reason?: s
   return { ok: false, reason: "fulfillment_not_live" };
 }
 
+/**
+ * Note 004: per-channel terminal SLA. human_call is worked by a part-time
+ * human operator — bookings queue until claimed, with an honest 24h auto-fail
+ * instead of the 4h REQ-FUL-6 default that assumed automated dialing.
+ */
+export function channelSlaMs(channel: string): number {
+  return config.fulfillment.channelSlaMs[channel] ?? config.fulfillment.terminalSlaMs;
+}
+
 export function placeBooking(db: Database, input: PlaceBookingInput): PlaceBookingResult {
   const merchant = getMerchantRow(db, input.merchant_id);
   if (!merchant) return { ok: false, error: "unknown_merchant" };
@@ -72,7 +81,7 @@ export function placeBooking(db: Database, input: PlaceBookingInput): PlaceBooki
 
   const bookingId = randomUUID();
   const at = now();
-  const sla = new Date(Date.now() + config.fulfillment.terminalSlaMs).toISOString();
+  const sla = new Date(Date.now() + channelSlaMs(merchant.fulfillment_channel)).toISOString();
 
   db.prepare(
     `INSERT INTO bookings (

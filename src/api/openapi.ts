@@ -1,7 +1,7 @@
 /**
  * Machine-readable self-description of the /v1 REST surface (OpenAPI 3.1).
  *
- * Marketing ask (marketing/STRATEGY.md, machine-surfaces table): what a
+ * Machine-surfaces principle: what a
  * connecting agent reads first — self-describing services get re-selected.
  * Served at GET /v1/openapi.json; GET /v1 returns a compact index pointing
  * here. The MCP surface at /mcp self-describes via tools/list already; this
