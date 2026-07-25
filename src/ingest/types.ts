@@ -118,7 +118,7 @@ export interface ReleaseMerchant {
   requires_deposit: false;
   bookable: false;
   fulfillment_channel: "voice_agent";
-  /** Not yet a registry column — release carries it so the data isn't lost; import maps it when @eng adds the column. */
+  /** Merchant's own site; imported into `merchants.website` and served on the full record. */
   website: string | null;
   languages: string[];
   verification_status: "unverified";

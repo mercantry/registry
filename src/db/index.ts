@@ -57,6 +57,11 @@ export function migrate(d: Database.Database) {
   addColumn("merchants", "verified_field_change", "verified_field_change TEXT");
   addColumn("merchants", "verified_field_change_at", "verified_field_change_at TEXT");
   addColumn("imports", "field_changes", "field_changes INTEGER NOT NULL DEFAULT 0");
+  // Releases have always carried `website`; the merchants table had no column
+  // for it, so the value stopped at the release artifact. No backfill is
+  // possible or honest here (unlike timezone, which is derivable from city) —
+  // existing rows stay NULL until the next import supplies the real value.
+  addColumn("merchants", "website", "website TEXT");
   addColumn("bookings", "client_reference_id", "client_reference_id TEXT"); // idempotent place_booking (agent retry safety)
   addColumn("bookings", "request_fingerprint", "request_fingerprint TEXT");
   // Uniqueness scope is per developer key (COALESCE: NULL api_key_id rows — anonymous

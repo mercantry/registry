@@ -49,6 +49,7 @@ import { feedbackHistory, submitFeedback } from "../feedback/feedback.js";
 import { mcpRouter } from "../mcp/http.js";
 import { discoveryRouter } from "./discovery.js";
 import { landingRouter } from "./landing.js";
+import { privacyRouter } from "./privacy.js";
 import { publicStats } from "./stats.js";
 import { keyFromHeaders, keysRouter, resolveApiKey } from "./keys.js";
 import { buildOpenApi, v1Index } from "./openapi.js";
@@ -119,6 +120,9 @@ app.use(discoveryRouter(db));
 
 /* Public landing page at / (crawlable by design — robots.txt still shields /ops/). */
 app.use(landingRouter(db));
+
+/* Public privacy policy at /privacy (crawlable; directories require the URL). */
+app.use(privacyRouter(db));
 
 /* --------------------------------------------- */
 /* Agent-facing REST (mirror of the MCP surface)  */

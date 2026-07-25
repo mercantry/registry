@@ -76,20 +76,20 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
   // exact values we would write.
   const existing = db.prepare(`
     SELECT name, aliases, cuisine_tags, address, neighborhood, city, timezone, lat, lng,
-           phone_primary, phone_verified_at, source_phone_conflict, source_phone_conflict_at,
+           website, phone_primary, phone_verified_at, source_phone_conflict, source_phone_conflict_at,
            verified_field_change, verified_field_change_at
     FROM merchants WHERE merchant_id = ?
   `);
   const insert = db.prepare(`
     INSERT INTO merchants (
       merchant_id, name, aliases, category, cuisine_tags, attribute_tags,
-      address, neighborhood, city, timezone, lat, lng, phone_primary, phone_verified_at,
+      address, neighborhood, city, timezone, lat, lng, website, phone_primary, phone_verified_at,
       hours, holiday_exceptions, price_band, reservation_policy, requires_deposit,
       fulfillment_channel, languages, verification_status, opt_out,
       max_party_size, created_at, updated_at
     ) VALUES (
       @merchant_id, @name, @aliases, @category, @cuisine_tags, @attribute_tags,
-      @address, @neighborhood, @city, @timezone, @lat, @lng, @phone_primary, NULL,
+      @address, @neighborhood, @city, @timezone, @lat, @lng, @website, @phone_primary, NULL,
       @hours, @holiday_exceptions, @price_band, @reservation_policy, @requires_deposit,
       @fulfillment_channel, @languages, 'unverified', 0,
       @max_party_size, @stamp, @stamp
@@ -99,7 +99,7 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
     UPDATE merchants SET
       name = @name, aliases = @aliases, cuisine_tags = @cuisine_tags,
       address = @address, neighborhood = @neighborhood, city = @city, timezone = @timezone,
-      lat = @lat, lng = @lng, phone_primary = @phone_primary,
+      lat = @lat, lng = @lng, website = @website, phone_primary = @phone_primary,
       source_phone_conflict = @source_phone_conflict, source_phone_conflict_at = @source_phone_conflict_at,
       verified_field_change = @verified_field_change, verified_field_change_at = @verified_field_change_at,
       updated_at = @updated_at
@@ -141,6 +141,7 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
     timezone: string | null;
     lat: number;
     lng: number;
+    website: string | null;
     phone_primary: string | null;
     phone_verified_at: string | null;
     source_phone_conflict: string | null;
@@ -166,6 +167,7 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
           timezone: m.timezone ?? null,
           lat: m.location.lat,
           lng: m.location.lng,
+          website: m.website ?? null,
           phone_primary: m.phone_primary,
           hours: JSON.stringify(m.hours),
           holiday_exceptions: JSON.stringify(m.holiday_exceptions),
@@ -206,6 +208,15 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
           if (m.name !== prev.name) drifted.push("name");
           if (m.location.address !== prev.address) drifted.push("address");
           if (haversineKm(m.location.lat, m.location.lng, prev.lat, prev.lng) > GEO_CHANGE_KM) drifted.push("geo");
+          // Website drift is affirmative-only: a *replacement* (one live URL for
+          // a different one) is evidence of a rebrand or change of hands, so it
+          // flags. A source first supplying a URL (null → value) is enrichment,
+          // and a source dropping one (value → null) is a gap in that snapshot,
+          // not evidence about the venue — neither is a re-verification signal.
+          // Sources disagree on website often (dedupe agreement 0.535, run #32),
+          // so the conservative rule keeps the operator queue meaningful.
+          const site = m.website ?? null;
+          if (site !== null && prev.website !== null && site !== prev.website) drifted.push("website");
         }
         const openChanges = new Set<string>(prev.verified_field_change ? JSON.parse(prev.verified_field_change) : []);
         for (const f of drifted) openChanges.add(f);
@@ -223,6 +234,7 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
           timezone: m.timezone ?? null,
           lat: m.location.lat,
           lng: m.location.lng,
+          website: m.website ?? null,
           phone_primary: phone,
         };
         const servedChange = (Object.keys(next) as (keyof typeof next)[]).some((k) => next[k] !== prev[k]);
@@ -279,10 +291,9 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
   return result;
 }
 
-// `website` from the release is not imported yet — the merchants table has no
-// column for it; the data stays in the release artifacts and re-imports
-// cleanly later. `timezone` is imported (naive booking datetimes and the
-// call-window policy are merchant-local).
+// `website` and `timezone` are both imported: timezone because naive booking
+// datetimes and the call-window policy are merchant-local, website because it
+// is the one release-carried contact field an agent can act on without a call.
 
 function parseArgs(argv: string[]) {
   const args: { release?: string; db?: string } = {};

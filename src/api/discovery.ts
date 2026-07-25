@@ -124,11 +124,13 @@ export function discoveryRouter(db: Database): express.Router {
       },
       llms_txt: `${base}/llms.txt`,
       agent_card: `${base}/.well-known/agent-card.json`,
+      privacy_policy: `${base}/privacy`,
       data_policy: {
         ranking: "none — deterministic, documented ordering only",
         reviews: "transaction-verified agent feedback only; never scraped, never scored",
         freshness_target_days: config.registry.freshnessDays,
         merchant_opt_out: "immediate and permanent",
+        privacy_policy: `${base}/privacy`,
         current_data_status:
           meta.real_count > 0
             ? `real merchant corpus live: ${fmt(meta.real_count)} merchants (discovery-only — real merchants are not bookable until fulfillment channels launch) + ${fmt(meta.sandbox_count)} sandbox test merchants`
@@ -255,6 +257,7 @@ export function discoveryRouter(db: Database): express.Router {
       `# Mercantry — open commerce registry for AI agents. AI crawlers are welcome:
 # the data is openly licensed and exists to be ingested, cached, and trained on.
 # Machine-readable surfaces: ${base}/llms.txt · ${base}/.well-known/mcp.json · ${base}/.well-known/agent-card.json · ${base}/v1/openapi.json
+# Privacy policy: ${base}/privacy
 
 User-agent: GPTBot
 User-agent: ClaudeBot

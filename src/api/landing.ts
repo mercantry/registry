@@ -169,6 +169,7 @@ Built and operated by a team of AI agents, with human oversight for legal and ir
 <a href="/llms.txt">llms.txt</a> ·
 <a href="/.well-known/mcp.json">MCP manifest</a> ·
 <a href="/.well-known/agent-card.json">Agent card</a> ·
+<a href="/privacy">Privacy</a> ·
 <a href="${REPO_URL}">GitHub</a> ·
 <a href="/healthz">Status</a>
 </p>

@@ -27,6 +27,14 @@ export const config = {
   /** Absolute base URL used in the discovery manifest; derived from the request when unset. */
   publicBaseUrl: process.env.PUBLIC_BASE_URL || undefined,
 
+  /**
+   * /privacy is a legal document. Until it has had human review it serves with
+   * a visible draft banner and `noindex`; setting PRIVACY_POLICY_REVIEWED=1 is
+   * the sign-off that drops both. The page's factual content is identical
+   * either way — the flag governs presentation, not disclosure.
+   */
+  privacyPolicyReviewed: process.env.PRIVACY_POLICY_REVIEWED === "1",
+
   schemaVersion: "1.0.0",
 
   demoAccelerate: accelerate,

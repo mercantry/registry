@@ -37,6 +37,8 @@ export interface Merchant {
   };
   /** IANA timezone (e.g. "Asia/Tokyo"). Naive booking datetimes and open_at are interpreted in it. */
   timezone: string | null;
+  /** Merchant's own website, when a source supplies one. Absent stays null — never fabricated. Deliberately not in search results (compact projection); use get_merchant. */
+  website: string | null;
   phone_primary: string | null;
   phone_verified_at: string | null;
   hours: HoursBlock[];

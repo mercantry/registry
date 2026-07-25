@@ -14,11 +14,12 @@ CREATE TABLE IF NOT EXISTS merchants (
   timezone           TEXT,                           -- IANA zone (e.g. Asia/Tokyo); naive booking datetimes are merchant-local
   lat                REAL NOT NULL,
   lng                REAL NOT NULL,
+  website            TEXT,                           -- merchant's own site, release-sourced; absent stays absent (never fabricated)
   phone_primary      TEXT,
   phone_verified_at  TEXT,                           -- ISO timestamp; required for bookable
   source_phone_conflict TEXT,                        -- P2 freshness: source phone that disagrees with the verified phone (re-verification signal, REQ-ING-3)
   source_phone_conflict_at TEXT,                     -- when the conflicting value was first observed
-  verified_field_change TEXT,                        -- P2 freshness: JSON array of served fields (name|address|geo) that changed since verification — applied, unlike phone, but flagged for re-verification; cleared when the operator re-verifies
+  verified_field_change TEXT,                        -- P2 freshness: JSON array of served fields (name|address|geo|website) that changed since verification — applied, unlike phone, but flagged for re-verification; cleared when the operator re-verifies
   verified_field_change_at TEXT,                     -- when the first such change was observed
   hours              TEXT NOT NULL DEFAULT '[]',     -- JSON: [{day:0-6, open:"HH:MM", close:"HH:MM"}]
   holiday_exceptions TEXT NOT NULL DEFAULT '[]',     -- JSON: [{date:"YYYY-MM-DD", closed:bool, open?, close?}]

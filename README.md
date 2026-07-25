@@ -19,7 +19,7 @@ claude mcp add --transport http mercantry https://agentic-commerce-registry.fly.
 ```
 
 - **REST mirror:** `/v1` — self-describing via [`/v1/openapi.json`](https://agentic-commerce-registry.fly.dev/v1/openapi.json)
-- **Discovery manifest:** [`/.well-known/mcp.json`](https://agentic-commerce-registry.fly.dev/.well-known/mcp.json) · agent card: [`/.well-known/agent-card.json`](https://agentic-commerce-registry.fly.dev/.well-known/agent-card.json) · health: `/healthz` · PII-free ops stats: `/v1/stats`
+- **Discovery manifest:** [`/.well-known/mcp.json`](https://agentic-commerce-registry.fly.dev/.well-known/mcp.json) · agent card: [`/.well-known/agent-card.json`](https://agentic-commerce-registry.fly.dev/.well-known/agent-card.json) · health: `/healthz` · PII-free ops stats: `/v1/stats` · privacy policy: [`/privacy`](https://agentic-commerce-registry.fly.dev/privacy)
 - **Keys are optional** (abuse control, not gating): `POST /v1/keys` with `developer_name` + `contact`. All reads are free and unauthenticated.
 - **Bulk export encouraged:** `GET /v1/export/merchants.ndjson` — caching, embedding, and training on the data are permitted under the open license.
 

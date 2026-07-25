@@ -439,3 +439,73 @@ test("fehd: ZH feed primary candidate is the data.gov.hk TC resource", () => {
   assert.ok(FEHD_URLS.zh[0].endsWith("LP_Restaurants_TC.XML"));
   assert.ok(FEHD_URLS.zh.length >= 2);
 });
+
+test("website: imported from the release, served on the full record, kept out of search", async () => {
+  const { getMerchant, searchMerchants } = await import("../src/registry/merchants.js");
+  const db = openTestDb();
+  const withSite = "aaaaaaaa-0000-4000-8000-000000000010";
+  const noSite = "aaaaaaaa-0000-4000-8000-000000000011";
+  await importRelease(db, writeRelease([
+    releaseMerchant({ merchant_id: withSite, name: "Lung King Heen", website: "https://lungkingheen.example" }),
+    releaseMerchant({ merchant_id: noSite, name: "Mak's Noodle", location: { address: "77 Wellington St", neighborhood: "Central", city: "Hong Kong", lat: 22.2811, lng: 114.1581 } }),
+  ]));
+
+  // the release value lands in the column and on the full record…
+  assert.equal(
+    (db.prepare("SELECT website FROM merchants WHERE merchant_id = ?").get(withSite) as any).website,
+    "https://lungkingheen.example",
+  );
+  assert.equal(getMerchant(db, withSite)!.website, "https://lungkingheen.example");
+  // …and absent stays absent — never fabricated, never defaulted to a string
+  assert.equal(getMerchant(db, noSite)!.website, null);
+
+  // search stays compact (agent-readability principle 1): website is get_merchant-only
+  const hit = searchMerchants(db, { limit: 10 } as any).results.find((r) => r.merchant_id === withSite)!;
+  assert.equal("website" in hit, false);
+});
+
+test("website drift on a verified merchant is affirmative-only (replacement flags; fill and drop don't)", async () => {
+  const { recordVerification } = await import("../src/registry/merchants.js");
+  const db = openTestDb();
+  const id = "aaaaaaaa-0000-4000-8000-000000000012";
+  await importRelease(db, writeRelease([releaseMerchant({ merchant_id: id, name: "Lung King Heen", website: null })]));
+  const verifiedAt = new Date(Date.now() - 10 * 86400_000).toISOString();
+  db.prepare("UPDATE merchants SET phone_verified_at = ?, verification_status = 'phone_verified' WHERE merchant_id = ?").run(verifiedAt, id);
+
+  const site = (w: string | null) => releaseMerchant({ merchant_id: id, name: "Lung King Heen", website: w });
+  const readRow = () =>
+    db.prepare("SELECT website, verified_field_change FROM merchants WHERE merchant_id = ?").get(id) as any;
+
+  // null → value: a source first supplying a URL is enrichment, not drift
+  await importRelease(db, writeRelease([site("https://a.example")], false, "2026-07-17"));
+  assert.equal(readRow().website, "https://a.example");
+  assert.equal(readRow().verified_field_change, null);
+
+  // identical re-import: no change at all
+  const r = await importRelease(db, writeRelease([site("https://a.example")], false, "2026-07-18"));
+  assert.equal(r.unchanged, 1);
+  assert.equal(readRow().verified_field_change, null);
+
+  // value → null: the source dropped it — served (the release stays the truth),
+  // but a snapshot gap says nothing about the venue, so it is not a signal
+  await importRelease(db, writeRelease([site(null)], false, "2026-07-19"));
+  assert.equal(readRow().website, null);
+  assert.equal(readRow().verified_field_change, null);
+
+  // value → different value: a rebrand/change-of-hands signal — flagged
+  await importRelease(db, writeRelease([site("https://b.example")], false, "2026-07-20"));
+  assert.equal(readRow().website, "https://b.example");
+  assert.equal(readRow().verified_field_change, null); // prev was null (dropped above), so still a fill
+  await importRelease(db, writeRelease([site("https://c.example")], false, "2026-07-21"));
+  assert.deepEqual(JSON.parse(readRow().verified_field_change), ["website"]);
+
+  // re-verification blesses the served value and clears the signal
+  recordVerification(db, id, "ben", "verified");
+  assert.equal(readRow().verified_field_change, null);
+
+  // an unverified merchant never accumulates the signal
+  const plain = "aaaaaaaa-0000-4000-8000-000000000013";
+  await importRelease(db, writeRelease([releaseMerchant({ merchant_id: plain, name: "Mak's Noodle", website: "https://x.example" })], false, "2026-07-22"));
+  await importRelease(db, writeRelease([releaseMerchant({ merchant_id: plain, name: "Mak's Noodle", website: "https://y.example" })], false, "2026-07-23"));
+  assert.equal((db.prepare("SELECT verified_field_change FROM merchants WHERE merchant_id = ?").get(plain) as any).verified_field_change, null);
+});

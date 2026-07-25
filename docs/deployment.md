@@ -148,6 +148,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<host>/ops/api/overview   # mus
 | `DEMO_ACCELERATE` | `1` | Set `0` in production for real retry/SLA timers |
 | `LAUNCH_CITY` / `LAUNCH_TZ` | SF / America/Los_Angeles | Open Decision #1 |
 | `PUBLIC_BASE_URL` | *(derived from request)* | Absolute URL used in `/.well-known/mcp.json` links |
+| `PRIVACY_POLICY_REVIEWED` | *(unset)* | `1` once `/privacy` has had human/legal review — drops its draft banner and `noindex` |
 
 ## Discovery endpoints (public by design)
 
@@ -157,6 +158,12 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<host>/ops/api/overview   # mus
   discovery document; declares the real transports (MCP + REST), skills,
   and live coverage. Explicitly does not claim A2A JSON-RPC support.
 - `GET /llms.txt` — the llms.txt template rendered with live stats.
+- `GET /privacy` — the privacy policy (a public URL is a prerequisite for
+  connector/tool directory submissions). Collection facts are derived from the
+  live system — API-user fields from `PRAGMA table_info(api_keys)`, merchant
+  sources from the imported release manifests — so the page cannot claim less
+  collection than actually happens. Serves with a draft banner and `noindex`
+  until `PRIVACY_POLICY_REVIEWED=1` records the human sign-off.
 - `GET /robots.txt` — AI crawlers welcomed; `/ops/` and `/status/` disallowed.
 - `GET /healthz` — cheap probe for uptime monitors (`{"ok":true,...}`).
 

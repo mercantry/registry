@@ -46,6 +46,7 @@ export function rowToMerchant(row: Row): Merchant {
       lng: row.lng,
     },
     timezone: row.timezone ?? null,
+    website: row.website ?? null,
     phone_primary: row.phone_primary,
     phone_verified_at: row.phone_verified_at,
     hours: JSON.parse(row.hours),

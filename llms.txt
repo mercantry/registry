@@ -10,6 +10,7 @@ Key facts for LLMs and agents:
 - Coverage: {{merchant_count}} merchants across {{cities}} — live numbers via get_registry_meta
 - Fulfillment: human-operated phone booking, operating window 12:00–23:00 Asia/Shanghai (04:00–15:00 UTC); real bookings only for phone-verified `bookable` merchants; `sandbox: true` merchants give deterministic test outcomes and never touch a real restaurant
 - Booking states: pending → queued → in_progress → confirmed | failed | needs_input (plus cancelled); structured failure reasons; webhooks via callback_url; per-channel SLA honest (human_call queues and auto-fails at 24h rather than pretending to be instant)
+- Privacy: served at /privacy on this host — what the service stores (openly licensed merchant sources, optional API-key fields, booking data), what it does not (no request log, no cookies, no trackers, no call recording), retention, and merchant opt-out
 - Data: openly licensed sources only (Overture CDLA-P-2.0, official registers incl. HK FEHD EN/ZH names, LA Office of Finance), conflated with per-field provenance, QA-gated versioned releases with published drop counts; no scraped reviews; no ranking fields exist in the schema
 
 ## Docs

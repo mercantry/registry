@@ -369,6 +369,7 @@ export function v1Index(baseUrl: string) {
       bookings: `${baseUrl}/v1/bookings`,
       health: `${baseUrl}/healthz`,
       discovery_manifest: `${baseUrl}/.well-known/mcp.json`,
+      privacy_policy: `${baseUrl}/privacy`,
     },
     posture: "Reads free and unauthenticated. Search is filter-based and never ranked. Availability is checked on the call at booking time.",
   };
