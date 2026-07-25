@@ -68,6 +68,19 @@ Amend a queued booking, resolve `needs_input` (`accept_option_index` confirms an
 ### `submit_feedback`
 Accepted only against a `confirmed` booking, once per booking, within 14 days (REQ-FBK-1). Structured fields first: `reservation_honored`, `seated_on_time`, `matched_description`, `would_repeat`, plus optional free text ≤ 500 chars. Served raw to all agents via `get_merchant` — never editorialized, never weighted into a platform score (REQ-FBK-3). First feedback upgrades the merchant to `transaction_verified`.
 
+## Errors (machine-actionable by contract)
+
+Every failure — MCP tool result or REST 4xx/5xx — is a structured object built to be self-corrected from:
+
+```json
+{"ok":false,"error":"party_size_out_of_range","field":"party_size","allowed":"1-8","message":"This merchant seats parties of 1-8.","docs":"https://<host>/v1/openapi.json"}
+```
+
+- **`error` is a stable machine code** — match on it exactly (`unknown_merchant`, `fulfillment_not_live`, `client_reference_conflict`, `invalid_datetime`, …). Codes never embed dynamic values; specifics live in `field` / `allowed` / `example` / `message`.
+- **MCP**: error results set `isError: true` and the same JSON is the text content. **REST**: the HTTP status matches the code (404 unknown ids, 409 reference conflict, 401 bad key, 429 limits), and unknown `/v1` paths return `unknown_endpoint` JSON, never HTML.
+- **429s teach backoff**: the `Retry-After` header plus `retry_after_s`/`limit`/`remaining`/`reset` in the body say exactly when to resume — applies to the per-minute rate limit (`rate_limited`) and key-minting caps (`key_minting_limit_*`, rolling 24h). Live state rides on every response in `X-RateLimit-*` headers.
+- Full code catalog with statuses: `AgentError` schema + per-path responses in `/v1/openapi.json` (source: `src/registry/errors.ts`).
+
 ## Example transcript
 
 ```

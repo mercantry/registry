@@ -2,6 +2,7 @@ import type { Database } from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { now } from "../db/index.js";
 import { config } from "../config.js";
+import { agentError, type AgentErrorDetail } from "../registry/errors.js";
 import { deriveBookable, getMerchantRow } from "../registry/merchants.js";
 import { parseInstant } from "../registry/time.js";
 import { logEvent, transition } from "./stateMachine.js";
@@ -25,12 +26,13 @@ export interface PlaceBookingInput {
   api_key_id?: string;
 }
 
-export interface PlaceBookingResult {
+export interface PlaceBookingResult extends AgentErrorDetail {
   ok: boolean;
   booking_id?: string;
   state?: BookingState;
   /** True when this call matched an existing client_reference_id — no new booking was created. */
   idempotent_replay?: boolean;
+  /** Stable machine code on failure; message/field/allowed/example carry the fix (registry/errors.ts). */
   error?: string;
 }
 
@@ -87,7 +89,7 @@ function findByClientReference(db: Database, apiKeyId: string | undefined, ref: 
 }
 
 function replayResult(existing: Row, fingerprint: string): PlaceBookingResult {
-  if (existing.request_fingerprint !== fingerprint) return { ok: false, error: "client_reference_conflict" };
+  if (existing.request_fingerprint !== fingerprint) return agentError("client_reference_conflict");
   return { ok: true, booking_id: existing.booking_id, state: existing.state, idempotent_replay: true };
 }
 
@@ -100,7 +102,7 @@ export function placeBooking(db: Database, input: PlaceBookingInput): PlaceBooki
   if (input.client_reference_id !== undefined) {
     ref = String(input.client_reference_id).trim();
     if (!ref || ref.length > CLIENT_REFERENCE_MAX_CHARS) {
-      return { ok: false, error: `invalid_client_reference_id (1-${CLIENT_REFERENCE_MAX_CHARS} chars)` };
+      return agentError("invalid_client_reference_id", { allowed: `1-${CLIENT_REFERENCE_MAX_CHARS} chars` });
     }
     fingerprint = requestFingerprint(input);
     const existing = findByClientReference(db, input.api_key_id, ref);
@@ -108,11 +110,11 @@ export function placeBooking(db: Database, input: PlaceBookingInput): PlaceBooki
   }
 
   const merchant = getMerchantRow(db, input.merchant_id);
-  if (!merchant) return { ok: false, error: "unknown_merchant" };
+  if (!merchant) return agentError("unknown_merchant");
   // Booking guard first, so a real merchant returns the honest `fulfillment_not_live`
   // rather than an incidental `merchant_not_phone_verified`.
   const elig = fulfillmentEligibility(merchant);
-  if (!elig.ok) return { ok: false, error: elig.reason };
+  if (!elig.ok) return agentError(elig.reason!);
   if (!deriveBookable(merchant as any)) {
     const reason = merchant.opt_out
       ? "merchant_opted_out"
@@ -121,16 +123,19 @@ export function placeBooking(db: Database, input: PlaceBookingInput): PlaceBooki
         : !merchant.phone_verified_at
           ? "merchant_not_phone_verified"
           : "reservation_policy_not_bookable";
-    return { ok: false, error: reason };
+    return agentError(reason);
   }
   if (input.party_size < 1 || input.party_size > merchant.max_party_size) {
-    return { ok: false, error: `party_size_out_of_range (max ${merchant.max_party_size})` };
+    return agentError("party_size_out_of_range", {
+      allowed: `1-${merchant.max_party_size}`,
+      message: `This merchant seats parties of 1-${merchant.max_party_size}.`,
+    });
   }
   if ((input.special_requests ?? "").length > config.mcp.specialRequestMaxChars) {
-    return { ok: false, error: `special_requests_too_long (max ${config.mcp.specialRequestMaxChars} chars)` };
+    return agentError("special_requests_too_long");
   }
   if (parseInstant(input.datetime, merchant.timezone || config.timezone) === null) {
-    return { ok: false, error: "invalid_datetime" };
+    return agentError("invalid_datetime");
   }
 
   const bookingId = randomUUID();
@@ -235,14 +240,18 @@ export function modifyBooking(
     window_minutes?: number;
     accept_option_index?: number;
   },
-): { ok: boolean; state?: BookingState; error?: string } {
+): { ok: boolean; state?: BookingState; error?: string } & AgentErrorDetail {
   const b = getBooking(db, bookingId);
-  if (!b) return { ok: false, error: "unknown_booking" };
+  if (!b) return agentError("unknown_booking");
 
   if (b.state === "needs_input" && changes.accept_option_index !== undefined) {
     const options = b.needs_input_options ? JSON.parse(b.needs_input_options) : [];
     const opt = options[changes.accept_option_index];
-    if (!opt) return { ok: false, error: "invalid_option_index" };
+    if (!opt) {
+      return agentError("invalid_option_index", {
+        allowed: options.length ? `0-${options.length - 1}` : "no options pending",
+      });
+    }
     // Merchant already offered this slot on the call — accepting it confirms directly.
     const code = makeConfirmationCode();
     db.prepare(
@@ -254,7 +263,10 @@ export function modifyBooking(
   }
 
   if (b.state === "confirmed" || b.state === "failed" || b.state === "cancelled") {
-    if (b.state !== "confirmed") return { ok: false, error: `booking_in_terminal_state (${b.state})` };
+    if (b.state !== "confirmed")
+      return agentError("booking_in_terminal_state", {
+        message: `This booking is already ${b.state} and cannot be modified. Place a new booking instead.`,
+      });
     // Modifying a confirmed booking requires a new call to the merchant.
     db.prepare(
       "UPDATE bookings SET requested_time = COALESCE(?, requested_time), party_size = COALESCE(?, party_size), window_minutes = COALESCE(?, window_minutes), confirmed_time = NULL, confirmation_code = NULL, attempts = 0, next_attempt_at = NULL, sla_deadline = ?, updated_at = ? WHERE booking_id = ?",
@@ -301,11 +313,13 @@ export function cancelBooking(
   db: Database,
   bookingId: string,
   reason?: string,
-): { ok: boolean; state?: BookingState; error?: string } {
+): { ok: boolean; state?: BookingState; error?: string } & AgentErrorDetail {
   const b = getBooking(db, bookingId);
-  if (!b) return { ok: false, error: "unknown_booking" };
+  if (!b) return agentError("unknown_booking");
   if (b.state === "failed" || b.state === "cancelled")
-    return { ok: false, error: `booking_in_terminal_state (${b.state})` };
+    return agentError("booking_in_terminal_state", {
+      message: `This booking is already ${b.state}; there is nothing to cancel.`,
+    });
 
   const wasConfirmed = b.state === "confirmed";
   logEvent(db, bookingId, "tool_call", { tool: "cancel_booking", reason });

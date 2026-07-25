@@ -24,7 +24,7 @@ import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import { getDb } from "../db/index.js";
 import { config } from "../config.js";
-import { sha256Hex } from "./normalize.js";
+import { haversineKm, sha256Hex } from "./normalize.js";
 import type { ReleaseManifest, ReleaseMerchant } from "./types.js";
 
 export interface ImportResult {
@@ -37,8 +37,13 @@ export interface ImportResult {
   unchanged: number;
   /** Verified merchants whose source phone disagrees with the verified phone (open after this import). */
   phone_conflicts: number;
+  /** Verified merchants with an open name/address/geo change signal after this import. */
+  field_changes: number;
   provenance_rows: number;
 }
+
+/** A geo move below this is Overture snapshot drift, not a venue move. */
+const GEO_CHANGE_KM = 0.15;
 
 export async function importRelease(db: Database, releaseDir: string): Promise<ImportResult> {
   const manifest = JSON.parse(await readFile(join(releaseDir, "manifest.json"), "utf8")) as ReleaseManifest;
@@ -71,7 +76,8 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
   // exact values we would write.
   const existing = db.prepare(`
     SELECT name, aliases, cuisine_tags, address, neighborhood, city, timezone, lat, lng,
-           phone_primary, phone_verified_at, source_phone_conflict, source_phone_conflict_at
+           phone_primary, phone_verified_at, source_phone_conflict, source_phone_conflict_at,
+           verified_field_change, verified_field_change_at
     FROM merchants WHERE merchant_id = ?
   `);
   const insert = db.prepare(`
@@ -95,6 +101,7 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
       address = @address, neighborhood = @neighborhood, city = @city, timezone = @timezone,
       lat = @lat, lng = @lng, phone_primary = @phone_primary,
       source_phone_conflict = @source_phone_conflict, source_phone_conflict_at = @source_phone_conflict_at,
+      verified_field_change = @verified_field_change, verified_field_change_at = @verified_field_change_at,
       updated_at = @updated_at
     WHERE merchant_id = @merchant_id
     -- ops/verification-owned columns deliberately absent from the update list:
@@ -120,6 +127,7 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
     updated: 0,
     unchanged: 0,
     phone_conflicts: 0,
+    field_changes: 0,
     provenance_rows: 0,
   };
 
@@ -137,6 +145,8 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
     phone_verified_at: string | null;
     source_phone_conflict: string | null;
     source_phone_conflict_at: string | null;
+    verified_field_change: string | null;
+    verified_field_change_at: string | null;
   }
 
   db.transaction(() => {
@@ -184,6 +194,25 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
           conflict === null ? null : conflict === prev.source_phone_conflict ? prev.source_phone_conflict_at : stamp;
         if (conflict !== null) result.phone_conflicts++;
 
+        // Name/address/geo drift on a verified merchant: the source is
+        // authoritative for these (unlike phone), so the new value IS served —
+        // but the venue may have moved, rebranded, or changed hands since the
+        // operator verified it, so the change is flagged for re-verification
+        // (REQ-ING-3). The signal accumulates across imports (first-observed
+        // timestamp kept) and clears only when the operator re-verifies. A geo
+        // move under GEO_CHANGE_KM is snapshot drift, not a signal.
+        const drifted: string[] = [];
+        if (verified) {
+          if (m.name !== prev.name) drifted.push("name");
+          if (m.location.address !== prev.address) drifted.push("address");
+          if (haversineKm(m.location.lat, m.location.lng, prev.lat, prev.lng) > GEO_CHANGE_KM) drifted.push("geo");
+        }
+        const openChanges = new Set<string>(prev.verified_field_change ? JSON.parse(prev.verified_field_change) : []);
+        for (const f of drifted) openChanges.add(f);
+        const fieldChange = openChanges.size ? JSON.stringify([...openChanges].sort()) : null;
+        const fieldChangeAt = fieldChange === null ? null : (prev.verified_field_change_at ?? stamp);
+        if (fieldChange !== null) result.field_changes++;
+
         const next = {
           name: m.name,
           aliases: JSON.stringify(m.aliases),
@@ -203,6 +232,8 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
             ...next,
             source_phone_conflict: conflict,
             source_phone_conflict_at: conflictAt,
+            verified_field_change: fieldChange,
+            verified_field_change_at: fieldChangeAt,
             updated_at: stamp,
           });
           result.updated++;
@@ -226,8 +257,8 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
     // the audit trail. Full manifest travels along (coverage, diff, agreement).
     db.prepare(
       `INSERT INTO imports (city_key, city, release, generated_at, imported_at, checksum_sha256,
-                            merchant_count, inserted, updated, unchanged, phone_conflicts, manifest_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            merchant_count, inserted, updated, unchanged, phone_conflicts, field_changes, manifest_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       manifest.city_key,
       manifest.city,
@@ -240,6 +271,7 @@ export async function importRelease(db: Database, releaseDir: string): Promise<I
       result.updated,
       result.unchanged,
       result.phone_conflicts,
+      result.field_changes,
       JSON.stringify(manifest),
     );
   })();

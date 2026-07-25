@@ -33,10 +33,13 @@ import {
   placeBooking,
 } from "../orchestrator/bookings.js";
 import { feedbackHistory, submitFeedback } from "../feedback/feedback.js";
+import { agentError, docsUrl } from "../registry/errors.js";
 
 export interface RegistryServerOptions {
   /** Resolved developer key id — attributed to bookings for abuse control + metrics (never gating). */
   apiKeyId?: string;
+  /** Base URL for docs links in error payloads (derived from the HTTP request; unset over stdio). */
+  docsBase?: string;
 }
 
 export function buildRegistryServer(db: Database, opts: RegistryServerOptions = {}): McpServer {
@@ -45,9 +48,17 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
     version: config.schemaVersion,
   });
 
-  const json = (data: unknown) => ({
-    content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
-  });
+  // Error results carry the agent-actionable contract (registry/errors.ts):
+  // stable code + field/allowed/example/message, a docs pointer, and MCP's
+  // isError flag so clients that honor it see the failure without parsing.
+  const json = (data: unknown) => {
+    const failed = typeof data === "object" && data !== null && (data as { ok?: unknown }).ok === false;
+    const payload = failed ? { ...(data as object), docs: docsUrl(opts.docsBase) } : data;
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+      ...(failed ? { isError: true } : {}),
+    };
+  };
 
   server.registerTool(
     "search_merchants",
@@ -95,7 +106,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
           }),
         );
       } catch (e) {
-        if (e instanceof Error && e.message === "invalid_open_at") return json({ error: "invalid_open_at" });
+        if (e instanceof Error && e.message === "invalid_open_at") return json(agentError("invalid_open_at"));
         throw e;
       }
     },
@@ -111,7 +122,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
     },
     async ({ merchant_id }) => {
       const m = getMerchant(db, merchant_id);
-      if (!m) return json({ error: "unknown_merchant" });
+      if (!m) return json(agentError("unknown_merchant"));
       return json({
         ...m,
         feedback_summary: feedbackSummary(db, merchant_id),
@@ -132,7 +143,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
     },
     async ({ merchant_id }) => {
       const m = getMerchant(db, merchant_id);
-      if (!m) return json({ error: "unknown_merchant" });
+      if (!m) return json(agentError("unknown_merchant"));
       return json({
         merchant_id,
         availability_check: "performed_at_booking",
@@ -196,7 +207,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
     },
     async ({ booking_id, include_events }) => {
       const status = bookingStatus(db, booking_id);
-      if (!status) return json({ error: "unknown_booking" });
+      if (!status) return json(agentError("unknown_booking"));
       return json(include_events ? { ...status, events: getBookingEvents(db, booking_id) } : status);
     },
   );

@@ -9,6 +9,7 @@ import express from "express";
 import { randomUUID, randomBytes } from "node:crypto";
 import { now } from "../db/index.js";
 import { config } from "../config.js";
+import { agentError, docsUrl, statusFor } from "../registry/errors.js";
 
 export interface KeyResolution {
   key_id?: string;
@@ -44,16 +45,21 @@ export function keyFromHeaders(headers: {
  * validation. Limits are enforced from the database (created_ip), so they
  * survive restarts.
  */
-export function mintAllowed(db: Database, ip: string): { ok: boolean; error?: string } {
+export function mintAllowed(db: Database, ip: string): { ok: boolean; error?: string; retry_after_s?: number } {
   const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
-  const perIp = (
-    db.prepare("SELECT COUNT(*) c FROM api_keys WHERE created_ip = ? AND created_at >= ?").get(ip, dayAgo) as { c: number }
-  ).c;
-  if (perIp >= config.mcp.keysPerIpPerDay) return { ok: false, error: "key_minting_limit_per_ip" };
-  const global = (
-    db.prepare("SELECT COUNT(*) c FROM api_keys WHERE created_at >= ?").get(dayAgo) as { c: number }
-  ).c;
-  if (global >= config.mcp.keysPerDayGlobal) return { ok: false, error: "key_minting_limit_global" };
+  // Rolling 24h window: the cap frees up when the oldest counted key ages out.
+  const retryAfter = (oldestCreatedAt: string | undefined) =>
+    Math.max(60, Math.ceil((new Date(oldestCreatedAt ?? dayAgo).getTime() + 86_400_000 - Date.now()) / 1000));
+  const perIp = db
+    .prepare("SELECT COUNT(*) c, MIN(created_at) oldest FROM api_keys WHERE created_ip = ? AND created_at >= ?")
+    .get(ip, dayAgo) as { c: number; oldest?: string };
+  if (perIp.c >= config.mcp.keysPerIpPerDay)
+    return { ok: false, error: "key_minting_limit_per_ip", retry_after_s: retryAfter(perIp.oldest) };
+  const global = db
+    .prepare("SELECT COUNT(*) c, MIN(created_at) oldest FROM api_keys WHERE created_at >= ?")
+    .get(dayAgo) as { c: number; oldest?: string };
+  if (global.c >= config.mcp.keysPerDayGlobal)
+    return { ok: false, error: "key_minting_limit_global", retry_after_s: retryAfter(global.oldest) };
   return { ok: true };
 }
 
@@ -70,21 +76,21 @@ const isHttpUrl = (s: string) => {
 export function keysRouter(db: Database): express.Router {
   const router = express.Router();
   router.post("/", (req, res) => {
+    const docs = docsUrl(process.env.PUBLIC_BASE_URL ?? `${req.protocol}://${req.get("host")}`);
+    const reject = (code: string) => res.status(statusFor(code)).json({ ...agentError(code), docs });
     const { developer_name, contact, webhook_url } = req.body ?? {};
     if (typeof developer_name !== "string" || !developer_name.trim() || developer_name.length > 80)
-      return res.status(400).json({ error: "developer_name required (1-80 chars)" });
+      return reject("invalid_developer_name");
     if (typeof contact !== "string" || !contact.trim() || contact.length > 120)
-      return res.status(400).json({ error: "contact required (1-120 chars)" });
+      return reject("invalid_contact");
     if (webhook_url !== undefined && (typeof webhook_url !== "string" || webhook_url.length > 300 || !isHttpUrl(webhook_url)))
-      return res.status(400).json({ error: "webhook_url must be an http(s) URL (max 300 chars)" });
+      return reject("invalid_webhook_url");
 
     const ip = req.ip ?? "unknown";
     const allowed = mintAllowed(db, ip);
     if (!allowed.ok) {
-      return res.status(429).json({
-        error: allowed.error,
-        note: `Self-serve keys are limited to ${config.mcp.keysPerIpPerDay}/day per client. Contact the registry to raise your limit.`,
-      });
+      res.setHeader("Retry-After", String(allowed.retry_after_s));
+      return res.status(429).json({ ...agentError(allowed.error!), retry_after_s: allowed.retry_after_s, docs });
     }
 
     const keyId = randomUUID();

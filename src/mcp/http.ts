@@ -21,6 +21,7 @@ import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { buildRegistryServer } from "./registryServer.js";
 import { keyFromHeaders, resolveApiKey } from "../api/keys.js";
+import { agentError, docsUrl } from "../registry/errors.js";
 
 export function mcpRouter(db: Database): express.Router {
   const router = express.Router();
@@ -39,16 +40,18 @@ export function mcpRouter(db: Database): express.Router {
   });
 
   router.post("/", async (req, res) => {
+    const docsBase = process.env.PUBLIC_BASE_URL ?? `${req.protocol}://${req.get("host")}`;
     const auth = resolveApiKey(db, keyFromHeaders(req.headers));
     if (auth.error) {
+      // JSON-RPC-shaped auth error; data carries the agent-actionable contract.
       return res.status(401).json({
         jsonrpc: "2.0",
-        error: { code: -32001, message: auth.error },
+        error: { code: -32001, message: auth.error, data: { ...agentError(auth.error), docs: docsUrl(docsBase) } },
         id: null,
       });
     }
 
-    const server = buildRegistryServer(db, { apiKeyId: auth.key_id });
+    const server = buildRegistryServer(db, { apiKeyId: auth.key_id, docsBase });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless
       enableJsonResponse: true,

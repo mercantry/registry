@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS merchants (
   phone_verified_at  TEXT,                           -- ISO timestamp; required for bookable
   source_phone_conflict TEXT,                        -- P2 freshness: source phone that disagrees with the verified phone (re-verification signal, REQ-ING-3)
   source_phone_conflict_at TEXT,                     -- when the conflicting value was first observed
+  verified_field_change TEXT,                        -- P2 freshness: JSON array of served fields (name|address|geo) that changed since verification — applied, unlike phone, but flagged for re-verification; cleared when the operator re-verifies
+  verified_field_change_at TEXT,                     -- when the first such change was observed
   hours              TEXT NOT NULL DEFAULT '[]',     -- JSON: [{day:0-6, open:"HH:MM", close:"HH:MM"}]
   holiday_exceptions TEXT NOT NULL DEFAULT '[]',     -- JSON: [{date:"YYYY-MM-DD", closed:bool, open?, close?}]
   price_band         INTEGER NOT NULL DEFAULT 2,     -- 1..4
@@ -168,6 +170,7 @@ CREATE TABLE IF NOT EXISTS imports (
   updated         INTEGER NOT NULL,  -- rows whose served fields actually changed
   unchanged       INTEGER NOT NULL,
   phone_conflicts INTEGER NOT NULL,  -- verified merchants whose source phone disagrees (open conflicts after this import)
+  field_changes   INTEGER NOT NULL DEFAULT 0,  -- verified merchants with an open name/address/geo change signal after this import
   manifest_json   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_imports_city ON imports(city_key, id);

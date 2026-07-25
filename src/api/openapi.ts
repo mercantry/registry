@@ -38,6 +38,28 @@ const merchantSummary = {
   },
 } as const;
 
+const agentError = {
+  type: "object",
+  description:
+    "Agent-actionable error, returned on every 4xx/5xx. `error` is a stable machine code — match on it exactly. Where known, `field` names the offending input, `allowed`/`example` say what would be accepted, `message` explains the fix, and `docs` links this document. 429s additionally set the Retry-After header and `retry_after_s`.",
+  required: ["error"],
+  properties: {
+    ok: { type: "boolean", const: false },
+    error: { type: "string", description: "Stable machine code, e.g. party_size_out_of_range, unknown_merchant, rate_limited." },
+    message: { type: "string", description: "What went wrong and what to do instead." },
+    field: { type: "string", description: "The offending request field, when the error is input-specific." },
+    allowed: { type: "string", description: "Accepted values/range for `field`, e.g. '1-8'." },
+    example: { type: "string", description: "An example of an accepted value." },
+    docs: { type: "string", description: "URL of this OpenAPI document." },
+    retry_after_s: { type: "integer", description: "Seconds to wait before retrying (429 only; mirrors the Retry-After header)." },
+  },
+} as const;
+
+const errorResponse = (description: string) => ({
+  description,
+  content: { "application/json": { schema: { $ref: "#/components/schemas/AgentError" } } },
+});
+
 const bookingStatus = {
   type: "object",
   description: "Booking state machine position with structured outcome details.",
@@ -82,14 +104,15 @@ export function buildOpenApi(baseUrl: string) {
         "This REST surface mirrors the MCP server at POST /mcp (Streamable HTTP) — same data, same booking state machine. " +
         "Honest by design: filter-based search in deterministic order (never ranked), transaction-verified feedback only, " +
         "availability checked on the call at booking time (`performed_at_booking`). " +
-        "Reads are free and unauthenticated; API keys are optional and exist for abuse control, not gating.",
+        "Reads are free and unauthenticated; API keys are optional and exist for abuse control, not gating. " +
+        "Errors are machine-actionable: every 4xx/5xx body carries a stable `error` code plus `field`/`allowed`/`example`/`message`/`docs` where known (schema AgentError); 429s set Retry-After.",
     },
     servers: [{ url: baseUrl }],
     components: {
       securitySchemes: {
         apiKey: { type: "apiKey", in: "header", name: "x-api-key", description: "Optional developer key from POST /v1/keys. Also accepted as Authorization: Bearer <key>." },
       },
-      schemas: { MerchantSummary: merchantSummary, BookingStatus: bookingStatus },
+      schemas: { MerchantSummary: merchantSummary, BookingStatus: bookingStatus, AgentError: agentError },
     },
     paths: {
       "/v1/meta": {
@@ -140,6 +163,8 @@ export function buildOpenApi(baseUrl: string) {
             { name: "offset", in: "query", schema: { type: "integer", minimum: 0 } },
           ],
           responses: {
+            "400": errorResponse("invalid_open_at — unparseable open_at value."),
+            "429": errorResponse("rate_limited — wait Retry-After seconds (also in retry_after_s), then resume."),
             "200": {
               description: "Deterministically ordered page of compact merchant records.",
               content: {
@@ -163,7 +188,7 @@ export function buildOpenApi(baseUrl: string) {
           summary: "Full signal dump for one merchant — maximal data, zero opinion",
           description: "Every schema field plus structured hours, raw feedback history, aggregate feedback summary, platform-observed operational stats, and per-field provenance with timestamps.",
           parameters: [{ name: "merchant_id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
-          responses: { "200": { description: "Full merchant record." }, "404": { description: "unknown_merchant" } },
+          responses: { "200": { description: "Full merchant record." }, "404": errorResponse("unknown_merchant") },
         },
       },
       "/v1/export/merchants.ndjson": {
@@ -194,8 +219,8 @@ export function buildOpenApi(baseUrl: string) {
           },
           responses: {
             "200": { description: "New key (reg_...) and documented rate limit." },
-            "400": { description: "Validation error." },
-            "429": { description: "Daily minting cap reached for this client." },
+            "400": errorResponse("invalid_developer_name | invalid_contact | invalid_webhook_url."),
+            "429": errorResponse("key_minting_limit_per_ip | key_minting_limit_global — Retry-After says when the rolling 24h window frees up."),
           },
         },
       },
@@ -233,9 +258,11 @@ export function buildOpenApi(baseUrl: string) {
           responses: {
             "201": { description: "Accepted: {ok, booking_id, state: queued}." },
             "200": { description: "Idempotent replay: {ok, booking_id, state, idempotent_replay: true} — an existing booking matched client_reference_id; nothing new was created." },
-            "400": { description: "Structured rejection, e.g. merchant_not_phone_verified, requires_deposit_not_supported_in_v1, party_size_out_of_range." },
-            "401": { description: "Invalid or throttled API key (keys are optional; omit rather than guess)." },
-            "409": { description: "client_reference_conflict: this client_reference_id was already used with different request parameters — use a fresh reference for a genuinely new booking." },
+            "400": errorResponse("Structured rejection, e.g. merchant_not_phone_verified, requires_deposit_not_supported_in_v1, party_size_out_of_range (with the merchant's real range in `allowed`)."),
+            "401": errorResponse("invalid_api_key | key_throttled_high_no_show_rate (keys are optional; omit rather than guess)."),
+            "404": errorResponse("unknown_merchant."),
+            "409": errorResponse("client_reference_conflict: this client_reference_id was already used with different request parameters — use a fresh reference for a genuinely new booking."),
+            "429": errorResponse("rate_limited — wait Retry-After seconds, then resume."),
           },
         },
       },
@@ -248,7 +275,7 @@ export function buildOpenApi(baseUrl: string) {
           ],
           responses: {
             "200": { description: "Booking status.", content: { "application/json": { schema: { $ref: "#/components/schemas/BookingStatus" } } } },
-            "404": { description: "unknown_booking" },
+            "404": errorResponse("unknown_booking."),
           },
         },
       },
@@ -272,7 +299,7 @@ export function buildOpenApi(baseUrl: string) {
               },
             },
           },
-          responses: { "200": { description: "Updated state." }, "400": { description: "Structured error." } },
+          responses: { "200": { description: "Updated state." }, "400": errorResponse("invalid_option_index | booking_in_terminal_state."), "404": errorResponse("unknown_booking.") },
         },
       },
       "/v1/bookings/{booking_id}/cancel": {
@@ -280,7 +307,7 @@ export function buildOpenApi(baseUrl: string) {
           summary: "Cancel a booking (mandatory when plans change — no-shows are tracked)",
           parameters: [{ name: "booking_id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
           requestBody: { content: { "application/json": { schema: { type: "object", properties: { reason: { type: "string" } } } } } },
-          responses: { "200": { description: "Cancelled." }, "400": { description: "Already terminal." } },
+          responses: { "200": { description: "Cancelled." }, "400": errorResponse("booking_in_terminal_state — already failed/cancelled."), "404": errorResponse("unknown_booking.") },
         },
       },
       "/v1/bookings/{booking_id}/feedback": {
@@ -306,13 +333,14 @@ export function buildOpenApi(baseUrl: string) {
               },
             },
           },
-          responses: { "201": { description: "Recorded." }, "400": { description: "Structured rejection (not confirmed / window expired / duplicate)." } },
+          responses: { "201": { description: "Recorded." }, "400": errorResponse("feedback_requires_confirmed_booking | feedback_window_expired | feedback_already_submitted | free_text_too_long."), "404": errorResponse("unknown_booking.") },
         },
       },
     },
     "x-rate-limits": {
       per_minute: config.mcp.rateLimitPerMinute,
       headers: ["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
+      on_429: "Retry-After header (seconds) + retry_after_s/limit/remaining/reset in the body — wait exactly that long, then resume.",
     },
     "x-mcp": {
       endpoint: "/mcp",

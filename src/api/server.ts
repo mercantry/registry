@@ -52,6 +52,9 @@ import { landingRouter } from "./landing.js";
 import { publicStats } from "./stats.js";
 import { keyFromHeaders, keysRouter, resolveApiKey } from "./keys.js";
 import { buildOpenApi, v1Index } from "./openapi.js";
+import { agentError } from "../registry/errors.js";
+import { jsonErrorHandler, requestBase, sendError, v1NotFound } from "./httpErrors.js";
+import { makeRateLimit } from "./rateLimit.js";
 
 type Row = Record<string, any>;
 
@@ -72,38 +75,9 @@ if (config.trustProxy) {
   app.set("trust proxy", config.trustProxy === "true" ? true : Number.isNaN(Number(config.trustProxy)) ? config.trustProxy : Number(config.trustProxy));
 }
 
-/* ------------------------------------------------------------------ */
-/* Rate limiting (REQ-MCP-5): documented limits, returned in headers.  */
-/* Applies to both agent surfaces: REST (/v1) and MCP over HTTP (/mcp).*/
-/* Gate B hardening: buckets key on VALID api keys or the client IP —  */
-/* never on unvalidated header values, or rotating junk keys would     */
-/* bypass per-IP limits and grow memory without bound.                  */
-/* ------------------------------------------------------------------ */
-const buckets = new Map<string, { count: number; resetAt: number }>();
-const pruneBuckets = setInterval(() => {
-  const nowMs = Date.now();
-  for (const [id, b] of buckets) if (b.resetAt <= nowMs) buckets.delete(id);
-}, 60_000);
-pruneBuckets.unref?.();
-const rateLimit: express.RequestHandler = (req, res, next) => {
-  const presented = keyFromHeaders(req.headers);
-  const validKey = presented && !resolveApiKey(db, presented).error ? presented : undefined;
-  const id = (validKey ?? req.ip ?? "anon") as string;
-  const nowMs = Date.now();
-  let b = buckets.get(id);
-  if (!b || b.resetAt <= nowMs) {
-    b = { count: 0, resetAt: nowMs + 60_000 };
-    buckets.set(id, b);
-  }
-  b.count++;
-  res.setHeader("X-RateLimit-Limit", String(config.mcp.rateLimitPerMinute));
-  res.setHeader("X-RateLimit-Remaining", String(Math.max(0, config.mcp.rateLimitPerMinute - b.count)));
-  res.setHeader("X-RateLimit-Reset", String(Math.ceil(b.resetAt / 1000)));
-  if (b.count > config.mcp.rateLimitPerMinute) {
-    return res.status(429).json({ error: "rate_limited", retry_after_s: Math.ceil((b.resetAt - nowMs) / 1000) });
-  }
-  next();
-};
+/* Rate limiting (REQ-MCP-5) on both agent surfaces — src/api/rateLimit.ts.
+   429s carry Retry-After + structured backoff state per the error contract. */
+const rateLimit = makeRateLimit(db);
 app.use("/v1", rateLimit);
 app.use("/mcp", rateLimit);
 
@@ -150,8 +124,6 @@ app.use(landingRouter(db));
 /* Agent-facing REST (mirror of the MCP surface)  */
 /* --------------------------------------------- */
 // Self-description: GET /v1 (compact index) + /v1/openapi.json (OpenAPI 3.1).
-const requestBase = (req: express.Request) =>
-  process.env.PUBLIC_BASE_URL ?? `${req.protocol}://${req.get("host")}`;
 app.get("/v1", (req, res) => res.json(v1Index(requestBase(req))));
 app.get("/v1/openapi.json", (req, res) => res.json(buildOpenApi(requestBase(req))));
 
@@ -178,14 +150,14 @@ app.get("/v1/merchants", (req, res) => {
       }),
     );
   } catch (e) {
-    if (e instanceof Error && e.message === "invalid_open_at") return res.status(400).json({ error: "invalid_open_at" });
+    if (e instanceof Error && e.message === "invalid_open_at") return sendError(req, res, agentError("invalid_open_at"));
     throw e;
   }
 });
 
 app.get("/v1/merchants/:id", (req, res) => {
   const m = getMerchant(db, req.params.id);
-  if (!m) return res.status(404).json({ error: "unknown_merchant" });
+  if (!m) return sendError(req, res, agentError("unknown_merchant"));
   res.json({
     ...m,
     feedback_summary: feedbackSummary(db, req.params.id),
@@ -210,7 +182,7 @@ app.get("/v1/stats", (_req, res) => res.json(publicStats(db)));
 
 app.post("/v1/bookings", (req, res) => {
   const auth = resolveKey(req);
-  if (auth.error) return res.status(401).json({ error: auth.error });
+  if (auth.error) return sendError(req, res, agentError(auth.error));
   // Idempotency-Key header is the REST-conventional spelling of client_reference_id;
   // an explicit body field wins if both are present.
   const body = req.body ?? {};
@@ -220,31 +192,37 @@ app.post("/v1/bookings", (req, res) => {
     ...(body.client_reference_id === undefined && headerRef ? { client_reference_id: headerRef } : {}),
     api_key_id: auth.key_id,
   });
-  const status = result.ok ? (result.idempotent_replay ? 200 : 201) : result.error === "client_reference_conflict" ? 409 : 400;
-  res.status(status).json(result);
+  if (!result.ok) return sendError(req, res, result);
+  res.status(result.idempotent_replay ? 200 : 201).json(result);
 });
 
 app.get("/v1/bookings/:id", (req, res) => {
   const status = bookingStatus(db, req.params.id);
-  if (!status) return res.status(404).json({ error: "unknown_booking" });
+  if (!status) return sendError(req, res, agentError("unknown_booking"));
   const includeEvents = req.query.include_events === "true";
   res.json(includeEvents ? { ...status, events: getBookingEvents(db, req.params.id) } : status);
 });
 
 app.post("/v1/bookings/:id/modify", (req, res) => {
   const result = modifyBooking(db, req.params.id, req.body ?? {});
-  res.status(result.ok ? 200 : 400).json(result);
+  if (!result.ok) return sendError(req, res, result);
+  res.json(result);
 });
 
 app.post("/v1/bookings/:id/cancel", (req, res) => {
   const result = cancelBooking(db, req.params.id, req.body?.reason);
-  res.status(result.ok ? 200 : 400).json(result);
+  if (!result.ok) return sendError(req, res, result);
+  res.json(result);
 });
 
 app.post("/v1/bookings/:id/feedback", (req, res) => {
   const result = submitFeedback(db, { ...req.body, booking_id: req.params.id });
-  res.status(result.ok ? 201 : 400).json(result);
+  if (!result.ok) return sendError(req, res, result);
+  res.status(201).json(result);
 });
+
+/* Anything else under /v1 is a machine-readable 404, never Express's HTML default. */
+app.use("/v1", v1NotFound);
 
 /* ------------------------------- */
 /* Status page for the end human   */
@@ -557,6 +535,10 @@ app.post("/ops/api/demo/place-booking", (req, res) => {
 // from the /ops mount above; asset paths in index.html are relative, so they
 // resolve to /ops/app.js etc. without changes.
 app.use("/ops", express.static(join(here, "..", "ops", "public")));
+
+// Final error middleware: agents get structured JSON for thrown/parse errors,
+// never an HTML stack page (registry/errors.ts contract).
+app.use(jsonErrorHandler);
 
 // Gate B: on Fly (FLY_APP_NAME is set by the runtime) the console must never
 // come up open — fail the boot instead of serving merchant editing + live-call

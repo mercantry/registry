@@ -445,8 +445,12 @@ export function recordVerification(
   ).run(merchantId, at, operator, outcome, notes ?? null);
 
   if (outcome === "verified") {
+    // Re-verification blesses the currently served name/address/location, so
+    // the drift signal clears. The phone conflict deliberately does NOT clear
+    // here: it self-clears when the source re-agrees, and the queue only pulls
+    // conflicts observed after this verification timestamp.
     db.prepare(
-      "UPDATE merchants SET phone_verified_at = ?, verification_status = CASE verification_status WHEN 'transaction_verified' THEN 'transaction_verified' ELSE 'phone_verified' END, updated_at = ? WHERE merchant_id = ?",
+      "UPDATE merchants SET phone_verified_at = ?, verification_status = CASE verification_status WHEN 'transaction_verified' THEN 'transaction_verified' ELSE 'phone_verified' END, verified_field_change = NULL, verified_field_change_at = NULL, updated_at = ? WHERE merchant_id = ?",
     ).run(at, at, merchantId);
     addProvenance(db, merchantId, "phone_primary", "verification_call", `operator=${operator}`);
     addProvenance(db, merchantId, "hours", "verification_call", `operator=${operator}`);
@@ -485,18 +489,28 @@ export function recordAnnoyance(db: Database, merchantId: string, note: string) 
 /**
  * Merchants due for (re-)verification (REQ-ING-3): never-verified and
  * stale-verified under the 60-day policy, plus change-signal pulls — a verified
- * merchant whose source phone now disagrees enters the queue immediately (ahead
- * of everything else) regardless of verification age.
+ * merchant whose source data drifted enters the queue immediately (ahead of
+ * everything else) regardless of verification age. A phone conflict pulls only
+ * when observed AFTER the last verification: a source that permanently
+ * disagrees with an operator-confirmed number (e.g. a register listing the
+ * office line) must not occupy the queue forever — but a NEW disagreeing
+ * value after the call is a fresh signal. Name/address/geo change signals
+ * (verified_field_change) clear on re-verification, so their presence alone
+ * pulls.
  */
 export function verificationQueue(db: Database) {
   const cutoff = new Date(Date.now() - config.registry.freshnessDays * 86400_000).toISOString();
   return db
     .prepare(
       `SELECT merchant_id, name, neighborhood, phone_primary, phone_verified_at, verification_status,
-              source_phone_conflict, source_phone_conflict_at
+              source_phone_conflict, source_phone_conflict_at, verified_field_change, verified_field_change_at
        FROM merchants
-       WHERE opt_out = 0 AND (phone_verified_at IS NULL OR phone_verified_at < ? OR source_phone_conflict IS NOT NULL)
-       ORDER BY source_phone_conflict IS NULL, phone_verified_at IS NOT NULL, phone_verified_at ASC, merchant_id`,
+       WHERE opt_out = 0 AND (phone_verified_at IS NULL OR phone_verified_at < ?
+             OR (source_phone_conflict IS NOT NULL AND source_phone_conflict_at > phone_verified_at)
+             OR verified_field_change IS NOT NULL)
+       ORDER BY ((source_phone_conflict IS NOT NULL AND source_phone_conflict_at > phone_verified_at)
+                 OR verified_field_change IS NOT NULL) DESC,
+                phone_verified_at IS NOT NULL, phone_verified_at ASC, merchant_id`,
     )
     .all(cutoff);
 }
@@ -561,6 +575,9 @@ function dataFreshness(db: Database) {
     record_age_days: { p50: ageAt(0.5), p90: ageAt(0.9) },
     source_phone_conflicts: (
       db.prepare("SELECT COUNT(*) c FROM merchants WHERE source_phone_conflict IS NOT NULL").get() as Row
+    ).c,
+    verified_field_changes: (
+      db.prepare("SELECT COUNT(*) c FROM merchants WHERE verified_field_change IS NOT NULL").get() as Row
     ).c,
     note: "updated_at moves only when source data for a record actually changes; record_age_days measures staleness of the served corpus, not import cadence.",
   };

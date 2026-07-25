@@ -8,6 +8,7 @@ import type { Database } from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { now } from "../db/index.js";
 import { config } from "../config.js";
+import { agentError, type AgentErrorDetail } from "../registry/errors.js";
 import { getBooking } from "../orchestrator/bookings.js";
 import { logEvent } from "../orchestrator/stateMachine.js";
 
@@ -25,10 +26,10 @@ export interface FeedbackInput {
 export function submitFeedback(
   db: Database,
   input: FeedbackInput,
-): { ok: boolean; feedback_id?: string; error?: string } {
+): { ok: boolean; feedback_id?: string; error?: string } & AgentErrorDetail {
   const booking = getBooking(db, input.booking_id);
-  if (!booking) return { ok: false, error: "unknown_booking" };
-  if (booking.state !== "confirmed") return { ok: false, error: "feedback_requires_confirmed_booking" };
+  if (!booking) return agentError("unknown_booking");
+  if (booking.state !== "confirmed") return agentError("feedback_requires_confirmed_booking");
 
   const confirmedEvent = db
     .prepare(
@@ -37,16 +38,16 @@ export function submitFeedback(
     .get(input.booking_id) as Row | undefined;
   const confirmedAt = confirmedEvent ? new Date(confirmedEvent.at).getTime() : new Date(booking.created_at).getTime();
   if (Date.now() - confirmedAt > config.feedback.windowDays * 86400_000) {
-    return { ok: false, error: `feedback_window_expired (${config.feedback.windowDays} days)` };
+    return agentError("feedback_window_expired");
   }
 
   const existing = db
     .prepare("SELECT feedback_id FROM feedback_events WHERE booking_id = ?")
     .get(input.booking_id);
-  if (existing) return { ok: false, error: "feedback_already_submitted" };
+  if (existing) return agentError("feedback_already_submitted");
 
   if ((input.free_text ?? "").length > config.feedback.maxFreeTextChars) {
-    return { ok: false, error: `free_text_too_long (max ${config.feedback.maxFreeTextChars} chars)` };
+    return agentError("free_text_too_long");
   }
 
   const id = randomUUID();
