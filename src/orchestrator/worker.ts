@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
 import { now } from "../db/index.js";
 import { getMerchantRow, addProvenance } from "../registry/merchants.js";
+import { parseInstant, zoneDateStr, zoneHHMM } from "../registry/time.js";
 import { logEvent, transition } from "./stateMachine.js";
 import { bookingStatus, fulfillmentEligibility, resolveFromCall } from "./bookings.js";
 import { sweepOperatorNotifications } from "./operatorNotify.js";
@@ -25,13 +26,9 @@ export function inAvoidWindow(atLocalHHMM: string): { blocked: boolean; until?: 
   return { blocked: false };
 }
 
-function localHHMM(): string {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: config.timezone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date());
+/** The merchant's IANA zone; pre-timezone rows fall back to the launch default. */
+function merchantTz(merchant: Row): string {
+  return merchant.timezone || config.timezone;
 }
 
 export function startWorker(db: Database, opts: { intervalMs?: number } = {}) {
@@ -67,15 +64,18 @@ function dispatchQueued(db: Database) {
       continue;
     }
 
-    // Peak-window avoidance applies when the booking is >4h away (skipped in demo mode).
+    // Peak-window avoidance applies when the booking is >4h away (skipped in
+    // demo mode). REQ-FUL-5 windows are the MERCHANT's meal rushes, so both
+    // the clock check and the resume time are computed in the merchant's zone.
     if (!config.demoAccelerate) {
-      const requestedMs = Date.parse(booking.requested_time + (booking.requested_time.endsWith("Z") ? "" : "Z"));
-      if (requestedMs - Date.now() > config.fulfillment.peakAvoidanceHorizonMs) {
-        const win = inAvoidWindow(localHHMM());
+      const tz = merchantTz(merchant);
+      const requestedAt = parseInstant(booking.requested_time, tz);
+      if (requestedAt && requestedAt.getTime() - Date.now() > config.fulfillment.peakAvoidanceHorizonMs) {
+        const win = inAvoidWindow(zoneHHMM(new Date(), tz));
         if (win.blocked) {
-          const today = new Date().toISOString().slice(0, 10);
+          const resume = parseInstant(`${zoneDateStr(new Date(), tz)}T${win.until}`, tz) ?? new Date();
           db.prepare("UPDATE bookings SET next_attempt_at = ? WHERE booking_id = ?").run(
-            `${today}T${win.until}:00.000Z`,
+            resume.toISOString(),
             booking.booking_id,
           );
           continue;
@@ -177,12 +177,16 @@ export function finishAttempt(
 
     case "counter_offer": {
       endCall("counter_offer");
-      // REQ-MCP-2: auto-accept if the merchant's offer falls inside the agent-authorized window.
+      // REQ-MCP-2: auto-accept if the merchant's offer falls inside the
+      // agent-authorized window. Requested and offered times are compared in
+      // the merchant's zone (naive strings on both sides are merchant-local).
       const window = booking.window_minutes ?? 0;
-      const requested = Date.parse(booking.requested_time + (booking.requested_time.endsWith("Z") ? "" : "Z"));
+      const merchant = getMerchantRow(db, booking.merchant_id);
+      const tz = merchant ? merchantTz(merchant) : config.timezone;
+      const requested = parseInstant(booking.requested_time, tz)?.getTime();
       const within = outcome.offered_times.find((t) => {
-        const offered = Date.parse(t.replace(" ", "T") + "Z");
-        return Math.abs(offered - requested) <= window * 60_000;
+        const offered = parseInstant(t, tz)?.getTime();
+        return requested !== undefined && offered !== undefined && Math.abs(offered - requested) <= window * 60_000;
       });
       if (booking.accept_within_window && within) {
         logEvent(db, bookingId, "call_note", { auto_accepted: within, rule: "accept_within_window" });

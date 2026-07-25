@@ -160,22 +160,27 @@ app.use("/v1/keys", keysRouter(db)); // self-serve issuance, abuse-guarded (Gate
 app.get("/v1/merchants", (req, res) => {
   const q = req.query;
   const near = q.lat && q.lng ? { lat: Number(q.lat), lng: Number(q.lng), radius_km: Number(q.radius_km ?? 3) } : undefined;
-  res.json(
-    searchMerchants(db, {
-      neighborhood: q.neighborhood as string | undefined,
-      near,
-      cuisine_tags: q.cuisine_tags ? String(q.cuisine_tags).split(",") : undefined,
-      attribute_tags: q.attribute_tags ? String(q.attribute_tags).split(",") : undefined,
-      price_band_min: q.price_band_min ? Number(q.price_band_min) : undefined,
-      price_band_max: q.price_band_max ? Number(q.price_band_max) : undefined,
-      open_at: q.open_at as string | undefined,
-      bookable_only: q.bookable_only === "true",
-      party_size: q.party_size ? Number(q.party_size) : undefined,
-      order_by: q.order_by as any,
-      limit: q.limit ? Number(q.limit) : undefined,
-      offset: q.offset ? Number(q.offset) : undefined,
-    }),
-  );
+  try {
+    res.json(
+      searchMerchants(db, {
+        neighborhood: q.neighborhood as string | undefined,
+        near,
+        cuisine_tags: q.cuisine_tags ? String(q.cuisine_tags).split(",") : undefined,
+        attribute_tags: q.attribute_tags ? String(q.attribute_tags).split(",") : undefined,
+        price_band_min: q.price_band_min ? Number(q.price_band_min) : undefined,
+        price_band_max: q.price_band_max ? Number(q.price_band_max) : undefined,
+        open_at: q.open_at as string | undefined,
+        bookable_only: q.bookable_only === "true",
+        party_size: q.party_size ? Number(q.party_size) : undefined,
+        order_by: q.order_by as any,
+        limit: q.limit ? Number(q.limit) : undefined,
+        offset: q.offset ? Number(q.offset) : undefined,
+      }),
+    );
+  } catch (e) {
+    if (e instanceof Error && e.message === "invalid_open_at") return res.status(400).json({ error: "invalid_open_at" });
+    throw e;
+  }
 });
 
 app.get("/v1/merchants/:id", (req, res) => {
@@ -206,8 +211,17 @@ app.get("/v1/stats", (_req, res) => res.json(publicStats(db)));
 app.post("/v1/bookings", (req, res) => {
   const auth = resolveKey(req);
   if (auth.error) return res.status(401).json({ error: auth.error });
-  const result = placeBooking(db, { ...req.body, api_key_id: auth.key_id });
-  res.status(result.ok ? 201 : 400).json(result);
+  // Idempotency-Key header is the REST-conventional spelling of client_reference_id;
+  // an explicit body field wins if both are present.
+  const body = req.body ?? {};
+  const headerRef = req.header("idempotency-key");
+  const result = placeBooking(db, {
+    ...body,
+    ...(body.client_reference_id === undefined && headerRef ? { client_reference_id: headerRef } : {}),
+    api_key_id: auth.key_id,
+  });
+  const status = result.ok ? (result.idempotent_replay ? 200 : 201) : result.error === "client_reference_conflict" ? 409 : 400;
+  res.status(status).json(result);
 });
 
 app.get("/v1/bookings/:id", (req, res) => {

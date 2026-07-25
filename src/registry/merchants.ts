@@ -1,6 +1,7 @@
 import type { Database } from "better-sqlite3";
 import { now } from "../db/index.js";
 import { config } from "../config.js";
+import { hasExplicitOffset, toZoneWallClock } from "./time.js";
 import type {
   FeedbackSummary,
   HolidayException,
@@ -44,6 +45,7 @@ export function rowToMerchant(row: Row): Merchant {
       lat: row.lat,
       lng: row.lng,
     },
+    timezone: row.timezone ?? null,
     phone_primary: row.phone_primary,
     phone_verified_at: row.phone_verified_at,
     hours: JSON.parse(row.hours),
@@ -126,6 +128,7 @@ export interface SearchResultItem {
   attribute_tags: string[];
   neighborhood: string;
   address: string;
+  timezone: string | null;
   lat: number;
   lng: number;
   price_band: number;
@@ -196,13 +199,31 @@ export function searchMerchants(
   }
   const whereSql = where.join(" AND ");
 
-  const openAt = f.open_at ? new Date(f.open_at.endsWith("Z") ? f.open_at : f.open_at + "Z") : null;
+  /**
+   * open_at semantics (multi-city): a naive datetime is each merchant's own
+   * local wall clock (one wall time, applied per merchant); an explicit
+   * ISO-8601 offset pins an instant, converted to each merchant's zone before
+   * the structured-hours check. Unparseable input fails fast instead of
+   * crashing the hours math downstream.
+   */
+  let openAtWall: Date | null = null; // fake-UTC encoding of the wall clock (isOpenAt convention)
+  let openAtInstant: Date | null = null;
+  if (f.open_at) {
+    const iso = f.open_at.trim().replace(" ", "T");
+    if (hasExplicitOffset(iso)) {
+      openAtInstant = new Date(iso);
+      if (Number.isNaN(openAtInstant.getTime())) throw new Error("invalid_open_at");
+    } else {
+      openAtWall = new Date(iso + "Z");
+      if (Number.isNaN(openAtWall.getTime())) throw new Error("invalid_open_at");
+    }
+  }
   const limit = Math.min(f.limit ?? config.mcp.searchPageSizeDefault, config.mcp.searchPageSizeMax);
   const offset = f.offset ?? 0;
 
   // Fast path: no JS-side filtering/ordering needed → count + page entirely in
   // SQL; only the returned page (≤ searchPageSizeMax rows) is materialized.
-  if (!f.near && !openAt) {
+  if (!f.near && !f.open_at) {
     const total = (db.prepare(`SELECT COUNT(*) c FROM merchants WHERE ${whereSql}`).get(...params) as Row).c as number;
     const rows = db
       .prepare(`SELECT * FROM merchants WHERE ${whereSql} ORDER BY merchant_id LIMIT ? OFFSET ?`)
@@ -243,7 +264,12 @@ export function searchMerchants(
       if (f.price_band_max && m.price_band > f.price_band_max) return false;
       if (f.bookable_only && !m.bookable) return false;
       if (f.party_size && m.max_party_size < f.party_size) return false;
-      if (openAt && !isOpenAt(m.hours, m.holiday_exceptions, openAt)) return false;
+      if (openAtWall && !isOpenAt(m.hours, m.holiday_exceptions, openAtWall)) return false;
+      if (
+        openAtInstant &&
+        !isOpenAt(m.hours, m.holiday_exceptions, toZoneWallClock(openAtInstant, m.timezone ?? config.timezone))
+      )
+        return false;
       return true;
     });
 
@@ -274,6 +300,7 @@ function searchResultItem(m: Merchant, distance_km?: number): SearchResultItem {
     attribute_tags: m.attribute_tags,
     neighborhood: m.location.neighborhood,
     address: m.location.address,
+    timezone: m.timezone,
     lat: m.location.lat,
     lng: m.location.lng,
     price_band: m.price_band,
@@ -455,17 +482,88 @@ export function recordAnnoyance(db: Database, merchantId: string, note: string) 
   }
 }
 
-/** Merchants due for (re-)verification under the 60-day freshness policy (REQ-ING-3). */
+/**
+ * Merchants due for (re-)verification (REQ-ING-3): never-verified and
+ * stale-verified under the 60-day policy, plus change-signal pulls — a verified
+ * merchant whose source phone now disagrees enters the queue immediately (ahead
+ * of everything else) regardless of verification age.
+ */
 export function verificationQueue(db: Database) {
   const cutoff = new Date(Date.now() - config.registry.freshnessDays * 86400_000).toISOString();
   return db
     .prepare(
-      `SELECT merchant_id, name, neighborhood, phone_primary, phone_verified_at, verification_status
+      `SELECT merchant_id, name, neighborhood, phone_primary, phone_verified_at, verification_status,
+              source_phone_conflict, source_phone_conflict_at
        FROM merchants
-       WHERE opt_out = 0 AND (phone_verified_at IS NULL OR phone_verified_at < ?)
-       ORDER BY phone_verified_at IS NOT NULL, phone_verified_at ASC, merchant_id`,
+       WHERE opt_out = 0 AND (phone_verified_at IS NULL OR phone_verified_at < ? OR source_phone_conflict IS NOT NULL)
+       ORDER BY source_phone_conflict IS NULL, phone_verified_at IS NOT NULL, phone_verified_at ASC, merchant_id`,
     )
     .all(cutoff);
+}
+
+/**
+ * P2 freshness block for get_registry_meta, derived from the import ledger and
+ * change-aware updated_at stamps. Honest emptiness: a database imported before
+ * the ledger existed reports releases: [] until its next import.
+ */
+function dataFreshness(db: Database) {
+  const dayMs = 86400_000;
+  const releases = (
+    db
+      .prepare(
+        `SELECT city_key, city, release, generated_at, imported_at, merchant_count, manifest_json
+         FROM imports i WHERE id = (SELECT MAX(id) FROM imports WHERE city_key = i.city_key)
+         ORDER BY city_key`,
+      )
+      .all() as Row[]
+  ).map((r) => {
+    const manifest = JSON.parse(r.manifest_json as string) as {
+      field_coverage?: Record<string, number>;
+      diff_vs_previous?: { added: number; removed: number; changed: number; unchanged: number } | null;
+    };
+    const diff = manifest.diff_vs_previous ?? null;
+    return {
+      city: r.city,
+      city_key: r.city_key,
+      release: r.release,
+      generated_at: r.generated_at,
+      imported_at: r.imported_at,
+      merchant_count: r.merchant_count,
+      source_data_age_days: Math.max(
+        0,
+        Math.floor((Date.now() - Date.parse(`${r.generated_at}T00:00:00Z`)) / dayMs),
+      ),
+      field_coverage: manifest.field_coverage ?? null,
+      churn_vs_previous_release: diff
+        ? { added: diff.added, removed: diff.removed, changed: diff.changed, unchanged: diff.unchanged }
+        : null,
+    };
+  });
+
+  // Record age = days since a served field of the record last changed
+  // (change-aware imports; unchanged re-imports don't touch updated_at).
+  const total = (db.prepare("SELECT COUNT(*) c FROM merchants WHERE sandbox = 0 AND opt_out = 0").get() as Row)
+    .c as number;
+  const ageAt = (fraction: number): number | null => {
+    if (!total) return null;
+    const row = db
+      .prepare(
+        `SELECT updated_at FROM merchants WHERE sandbox = 0 AND opt_out = 0
+         ORDER BY updated_at DESC LIMIT 1 OFFSET ?`,
+      )
+      .get(Math.min(total - 1, Math.floor(fraction * (total - 1)))) as Row | undefined;
+    if (!row?.updated_at) return null;
+    return Math.max(0, Math.floor((Date.now() - Date.parse(row.updated_at as string)) / dayMs));
+  };
+
+  return {
+    releases,
+    record_age_days: { p50: ageAt(0.5), p90: ageAt(0.9) },
+    source_phone_conflicts: (
+      db.prepare("SELECT COUNT(*) c FROM merchants WHERE source_phone_conflict IS NOT NULL").get() as Row
+    ).c,
+    note: "updated_at moves only when source data for a record actually changes; record_age_days measures staleness of the served corpus, not import cadence.",
+  };
 }
 
 export function registryMeta(db: Database) {
@@ -479,6 +577,16 @@ export function registryMeta(db: Database) {
     schema_version: config.schemaVersion,
     city: config.launchCity,
     timezone: config.timezone,
+    // Per-city coverage with each city's IANA zone — the authoritative
+    // multi-city view (the flat city/timezone pair above is the legacy
+    // launch-config default, kept for schema stability).
+    cities: (
+      db
+        .prepare(
+          "SELECT city, MAX(timezone) tz, COUNT(*) c FROM merchants WHERE sandbox = 0 AND opt_out = 0 GROUP BY city ORDER BY city",
+        )
+        .all() as Row[]
+    ).map((r) => ({ city: r.city, timezone: r.tz ?? null, merchant_count: r.c })),
     merchant_count: merchants,
     sandbox_count: one("SELECT COUNT(*) c FROM merchants WHERE sandbox = 1"),
     real_count: one("SELECT COUNT(*) c FROM merchants WHERE sandbox = 0"),
@@ -499,6 +607,10 @@ export function registryMeta(db: Database) {
         ? Math.round(((fresh.c as number) / merchants) * 1000) / 10
         : 0,
     },
+    // P2 freshness: which release each city's served corpus came from, how old
+    // that source data is, and what churned vs the prior release — so an agent
+    // can decide trust/re-fetch/cache without sampling records (REQ-MCP-1).
+    data: dataFreshness(db),
     opted_out: one("SELECT COUNT(*) c FROM merchants WHERE opt_out = 1"),
     bookings: {
       total: one("SELECT COUNT(*) c FROM bookings"),

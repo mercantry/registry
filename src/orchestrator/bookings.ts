@@ -1,8 +1,9 @@
 import type { Database } from "better-sqlite3";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { now } from "../db/index.js";
 import { config } from "../config.js";
 import { deriveBookable, getMerchantRow } from "../registry/merchants.js";
+import { parseInstant } from "../registry/time.js";
 import { logEvent, transition } from "./stateMachine.js";
 import type { BookingState } from "../registry/types.js";
 
@@ -11,13 +12,16 @@ type Row = Record<string, any>;
 export interface PlaceBookingInput {
   merchant_id: string;
   party_size: number;
-  datetime: string; // ISO local datetime
+  /** ISO-8601. Naive = the merchant's local wall time; an explicit offset pins the instant. */
+  datetime: string;
   window_minutes?: number;
   accept_within_window?: boolean;
   reservation_name: string;
   contact?: string;
   special_requests?: string;
   callback_url?: string;
+  /** Agent-supplied idempotency key: retrying with the same value returns the existing booking. */
+  client_reference_id?: string;
   api_key_id?: string;
 }
 
@@ -25,6 +29,8 @@ export interface PlaceBookingResult {
   ok: boolean;
   booking_id?: string;
   state?: BookingState;
+  /** True when this call matched an existing client_reference_id — no new booking was created. */
+  idempotent_replay?: boolean;
   error?: string;
 }
 
@@ -52,7 +58,55 @@ export function channelSlaMs(channel: string): number {
   return config.fulfillment.channelSlaMs[channel] ?? config.fulfillment.terminalSlaMs;
 }
 
+export const CLIENT_REFERENCE_MAX_CHARS = 128;
+
+/**
+ * Canonical hash of the booking request. A replayed client_reference_id must
+ * carry the same fingerprint to be treated as a retry; the same reference with
+ * different parameters is a conflict, never a silent wrong-booking return.
+ */
+function requestFingerprint(input: PlaceBookingInput): string {
+  const canonical = {
+    merchant_id: input.merchant_id,
+    party_size: input.party_size,
+    datetime: input.datetime,
+    window_minutes: input.window_minutes ?? 0,
+    accept_within_window: Boolean(input.accept_within_window),
+    reservation_name: input.reservation_name,
+    contact: input.contact ?? null,
+    special_requests: input.special_requests ?? null,
+    callback_url: input.callback_url ?? null,
+  };
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+function findByClientReference(db: Database, apiKeyId: string | undefined, ref: string): Row | undefined {
+  return db
+    .prepare("SELECT * FROM bookings WHERE COALESCE(api_key_id, '') = ? AND client_reference_id = ?")
+    .get(apiKeyId ?? "", ref) as Row | undefined;
+}
+
+function replayResult(existing: Row, fingerprint: string): PlaceBookingResult {
+  if (existing.request_fingerprint !== fingerprint) return { ok: false, error: "client_reference_conflict" };
+  return { ok: true, booking_id: existing.booking_id, state: existing.state, idempotent_replay: true };
+}
+
 export function placeBooking(db: Database, input: PlaceBookingInput): PlaceBookingResult {
+  // Idempotency replay is checked before every other guard: a retry of a
+  // timed-out call must find the booking it created even if the merchant's
+  // bookability changed in between.
+  let ref: string | undefined;
+  let fingerprint: string | undefined;
+  if (input.client_reference_id !== undefined) {
+    ref = String(input.client_reference_id).trim();
+    if (!ref || ref.length > CLIENT_REFERENCE_MAX_CHARS) {
+      return { ok: false, error: `invalid_client_reference_id (1-${CLIENT_REFERENCE_MAX_CHARS} chars)` };
+    }
+    fingerprint = requestFingerprint(input);
+    const existing = findByClientReference(db, input.api_key_id, ref);
+    if (existing) return replayResult(existing, fingerprint);
+  }
+
   const merchant = getMerchantRow(db, input.merchant_id);
   if (!merchant) return { ok: false, error: "unknown_merchant" };
   // Booking guard first, so a real merchant returns the honest `fulfillment_not_live`
@@ -75,7 +129,7 @@ export function placeBooking(db: Database, input: PlaceBookingInput): PlaceBooki
   if ((input.special_requests ?? "").length > config.mcp.specialRequestMaxChars) {
     return { ok: false, error: `special_requests_too_long (max ${config.mcp.specialRequestMaxChars} chars)` };
   }
-  if (Number.isNaN(Date.parse(input.datetime))) {
+  if (parseInstant(input.datetime, merchant.timezone || config.timezone) === null) {
     return { ok: false, error: "invalid_datetime" };
   }
 
@@ -83,29 +137,42 @@ export function placeBooking(db: Database, input: PlaceBookingInput): PlaceBooki
   const at = now();
   const sla = new Date(Date.now() + channelSlaMs(merchant.fulfillment_channel)).toISOString();
 
-  db.prepare(
-    `INSERT INTO bookings (
-      booking_id, merchant_id, api_key_id, state, party_size, requested_time,
-      window_minutes, accept_within_window, reservation_name, contact,
-      special_requests, callback_url, attempts, sla_deadline, created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`,
-  ).run(
-    bookingId,
-    input.merchant_id,
-    input.api_key_id ?? null,
-    "pending",
-    input.party_size,
-    input.datetime,
-    input.window_minutes ?? 0,
-    input.accept_within_window ? 1 : 0,
-    input.reservation_name,
-    input.contact ?? null,
-    input.special_requests ?? null,
-    input.callback_url ?? null,
-    sla,
-    at,
-    at,
-  );
+  try {
+    db.prepare(
+      `INSERT INTO bookings (
+        booking_id, merchant_id, api_key_id, state, party_size, requested_time,
+        window_minutes, accept_within_window, reservation_name, contact,
+        special_requests, callback_url, client_reference_id, request_fingerprint,
+        attempts, sla_deadline, created_at, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`,
+    ).run(
+      bookingId,
+      input.merchant_id,
+      input.api_key_id ?? null,
+      "pending",
+      input.party_size,
+      input.datetime,
+      input.window_minutes ?? 0,
+      input.accept_within_window ? 1 : 0,
+      input.reservation_name,
+      input.contact ?? null,
+      input.special_requests ?? null,
+      input.callback_url ?? null,
+      ref ?? null,
+      ref ? fingerprint : null,
+      sla,
+      at,
+      at,
+    );
+  } catch (e) {
+    // Two identical requests raced past the pre-insert lookup: the unique index
+    // on (api_key_id, client_reference_id) caught the duplicate — replay it.
+    if (ref && e instanceof Error && (e as { code?: string }).code?.startsWith("SQLITE_CONSTRAINT")) {
+      const existing = findByClientReference(db, input.api_key_id, ref);
+      if (existing) return replayResult(existing, fingerprint!);
+    }
+    throw e;
+  }
   logEvent(db, bookingId, "tool_call", { tool: "place_booking", input: { ...input } });
 
   // Accept into the fulfillment queue immediately; the worker picks it up.
@@ -127,15 +194,22 @@ export function getBookingEvents(db: Database, bookingId: string): Row[] {
 export function bookingStatus(db: Database, bookingId: string) {
   const b = getBooking(db, bookingId);
   if (!b) return null;
+  // Datetimes are echoed as stored (merchant-local unless the agent sent an
+  // explicit offset); timezone + *_utc make the instant unambiguous.
+  const tz = getMerchantRow(db, b.merchant_id)?.timezone || config.timezone;
   return {
     booking_id: b.booking_id,
     merchant_id: b.merchant_id,
+    client_reference_id: b.client_reference_id ?? undefined,
     state: b.state,
     failure_reason: b.failure_reason ?? undefined,
     requested_time: b.requested_time,
+    timezone: tz,
+    requested_time_utc: parseInstant(b.requested_time, tz)?.toISOString(),
     window_minutes: b.window_minutes,
     party_size: b.party_size,
     confirmed_time: b.confirmed_time ?? undefined,
+    confirmed_time_utc: b.confirmed_time ? parseInstant(b.confirmed_time, tz)?.toISOString() : undefined,
     confirmation_code: b.confirmation_code ?? undefined,
     merchant_instructions: b.merchant_instructions ?? undefined,
     needs_input_options: b.needs_input_options ? JSON.parse(b.needs_input_options) : undefined,
@@ -195,6 +269,8 @@ export function modifyBooking(
     logEvent(db, bookingId, "tool_call", { tool: "modify_booking", changes, note: "re-queued for modification call" });
     transition(db, bookingId, "cancelled", { via: "superseded_by_modification" });
     // A modification of a confirmed booking is modeled as cancel + rebook to keep the audit trail honest.
+    // client_reference_id is deliberately NOT carried over: the reference names the
+    // agent's original request, and the superseding rebook is a different request.
     const rebook = placeBooking(db, {
       merchant_id: b.merchant_id,
       party_size: changes.party_size ?? b.party_size,

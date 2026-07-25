@@ -35,6 +35,8 @@ export interface Merchant {
     lat: number;
     lng: number;
   };
+  /** IANA timezone (e.g. "Asia/Tokyo"). Naive booking datetimes and open_at are interpreted in it. */
+  timezone: string | null;
   phone_primary: string | null;
   phone_verified_at: string | null;
   hours: HoursBlock[];
@@ -100,7 +102,8 @@ export interface SearchFilters {
   attribute_tags?: string[];
   price_band_min?: number;
   price_band_max?: number;
-  open_at?: string; // ISO local datetime
+  /** ISO-8601 datetime. Explicit offset = exact instant (evaluated per merchant zone); naive = each merchant's local wall clock. */
+  open_at?: string;
   bookable_only?: boolean;
   party_size?: number;
   /** Deterministic ordering (documented, REQ non-ranking): "merchant_id" | "distance" (distance requires `near`). */

@@ -11,10 +11,13 @@ CREATE TABLE IF NOT EXISTS merchants (
   address            TEXT NOT NULL,
   neighborhood       TEXT NOT NULL,
   city               TEXT NOT NULL,
+  timezone           TEXT,                           -- IANA zone (e.g. Asia/Tokyo); naive booking datetimes are merchant-local
   lat                REAL NOT NULL,
   lng                REAL NOT NULL,
   phone_primary      TEXT,
   phone_verified_at  TEXT,                           -- ISO timestamp; required for bookable
+  source_phone_conflict TEXT,                        -- P2 freshness: source phone that disagrees with the verified phone (re-verification signal, REQ-ING-3)
+  source_phone_conflict_at TEXT,                     -- when the conflicting value was first observed
   hours              TEXT NOT NULL DEFAULT '[]',     -- JSON: [{day:0-6, open:"HH:MM", close:"HH:MM"}]
   holiday_exceptions TEXT NOT NULL DEFAULT '[]',     -- JSON: [{date:"YYYY-MM-DD", closed:bool, open?, close?}]
   price_band         INTEGER NOT NULL DEFAULT 2,     -- 1..4
@@ -84,6 +87,8 @@ CREATE TABLE IF NOT EXISTS bookings (
   sla_deadline     TEXT NOT NULL,           -- terminal state due by (REQ-FUL-6; per-channel, note 004)
   notify_issue_number INTEGER,              -- note 004: GitHub issue notifying the operator (NULL = none yet)
   notify_issue_closed INTEGER NOT NULL DEFAULT 0,  -- note 004: issue closed on terminal state
+  client_reference_id TEXT,                 -- agent-supplied idempotency key: retried place_booking returns this row
+  request_fingerprint TEXT,                 -- hash of the original request; a replay must match or is rejected
   created_at       TEXT NOT NULL,
   updated_at       TEXT NOT NULL
 );
@@ -145,6 +150,27 @@ CREATE TABLE IF NOT EXISTS api_keys (
   throttled      INTEGER NOT NULL DEFAULT 0,
   created_at     TEXT NOT NULL
 );
+
+-- P2 freshness: one row per release import — which release each city's served
+-- corpus came from and when. registry_meta reads the latest row per city;
+-- older rows stay as the import audit trail. manifest_json carries the full
+-- release manifest (field coverage, diff_vs_previous, source_agreement).
+CREATE TABLE IF NOT EXISTS imports (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  city_key        TEXT NOT NULL,     -- ingestion city key (la | tokyo | hk | sh)
+  city            TEXT NOT NULL,
+  release         TEXT NOT NULL,     -- e.g. 2026-07-22-hk
+  generated_at    TEXT NOT NULL,     -- release data date (source snapshot age starts here)
+  imported_at     TEXT NOT NULL,     -- when the import ran against this database
+  checksum_sha256 TEXT NOT NULL,
+  merchant_count  INTEGER NOT NULL,  -- records in the release
+  inserted        INTEGER NOT NULL,
+  updated         INTEGER NOT NULL,  -- rows whose served fields actually changed
+  unchanged       INTEGER NOT NULL,
+  phone_conflicts INTEGER NOT NULL,  -- verified merchants whose source phone disagrees (open conflicts after this import)
+  manifest_json   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_imports_city ON imports(city_key, id);
 
 -- Ops complaint / opt-out workflow (REQ-OPS-5) with same-day SLA.
 CREATE TABLE IF NOT EXISTS complaints (

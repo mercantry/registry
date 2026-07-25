@@ -11,6 +11,8 @@ Filter-based, **never ranked**. Deterministic order: `merchant_id` ASC by defaul
 
 Filters: `neighborhood`, `lat`+`lng`+`radius_km`, `cuisine_tags` (ANY-match), `attribute_tags` (ALL-match), `price_band_min/max`, `open_at`, `bookable_only`, `party_size`, `limit`/`offset`.
 
+**Timezones (multi-city):** every merchant carries an IANA `timezone` (e.g. `Asia/Tokyo`); per-city zones are listed in `get_registry_meta.cities`. A naive ISO datetime anywhere in the API (`open_at`, booking `datetime`) means the **merchant's local wall time**; an explicit ISO-8601 offset (`2026-07-18T19:00:00+09:00` or trailing `Z`) pins the exact instant. Unparseable `open_at` returns `invalid_open_at`.
+
 ```json
 { "neighborhood": "Mission", "cuisine_tags": ["thai", "vietnamese"], "bookable_only": true, "party_size": 4 }
 → { "order": "merchant_id", "total": 11, "results": [ { "merchant_id": "…", "name": "…", "bookable": true, … } ] }
@@ -23,7 +25,7 @@ Full signal dump: every schema field, structured hours + holiday exceptions, raw
 **Honest v1 behavior:** the registry holds no live availability. Returns `availability_check: "performed_at_booking"` plus reservation policy and hours so the agent can pick a plausible slot. Availability is confirmed on the call.
 
 ### `get_registry_meta`
-Coverage, bookable counts, verification/freshness stats (including how stale the data is), feedback corpus size, schema version, documented ordering rule. Lets agents evaluate the registry itself.
+Per-city coverage (`cities`: name, IANA timezone, merchant count), bookable counts, verification/freshness stats (including how stale the data is), feedback corpus size, schema version, documented ordering rule. Lets agents evaluate the registry itself.
 
 ## Booking tools (async)
 
@@ -38,11 +40,14 @@ Coverage, bookable counts, verification/freshness stats (including how stale the
   "reservation_name": "Pat Doe",
   "contact": "pat@example.com",
   "special_requests": "Quiet table if possible",
-  "callback_url": "https://your-agent.example/webhooks/registry"
+  "callback_url": "https://your-agent.example/webhooks/registry",
+  "client_reference_id": "d6f0a1e2-…"
 }
 → { "ok": true, "booking_id": "…", "state": "queued" }
 ```
-Fulfillment is asynchronous: a call is placed to the merchant (voice agent, human takeover available). `accept_within_window: true` is the recommended default — merchant counter-offers inside `±window_minutes` confirm without a round-trip (REQ-MCP-2).
+Fulfillment is asynchronous: a call is placed to the merchant (voice agent, human takeover available). `accept_within_window: true` is the recommended default — merchant counter-offers inside `±window_minutes` confirm without a round-trip (REQ-MCP-2). `datetime` is merchant-local when naive (see the timezone note above); an explicit offset is also accepted.
+
+**Retry safety (idempotency):** always send a unique `client_reference_id` (a UUID is ideal; ≤128 chars; REST also accepts an `Idempotency-Key` header). If the call times out or errors ambiguously, retry with the **same** reference — the registry returns the already-created booking (`idempotent_replay: true`, REST 200) instead of double-booking the restaurant. Reusing a reference with *different* parameters is rejected (`client_reference_conflict`, REST 409); use a fresh reference for a genuinely new booking. References are scoped per developer key. Never re-call `place_booking` after a timeout without one.
 
 ### `get_booking_status`
 State machine position: `pending → queued → in_progress → confirmed | failed | needs_input` (plus `cancelled`). Structured outcomes:
@@ -50,7 +55,7 @@ State machine position: `pending → queued → in_progress → confirmed | fail
 - `failed`: `failure_reason` ∈ `no_answer | fully_booked | closed | policy_mismatch | merchant_declined | bad_data | expired_sla | needs_input_timeout`
 - `needs_input`: `needs_input_options` (merchant-offered times) + `needs_input_deadline`
 
-Pass `include_events: true` for the full audit log. Prefer `callback_url` webhooks over polling (REQ-MCP-3); polling remains supported.
+Every status includes the merchant's `timezone` plus `requested_time_utc`/`confirmed_time_utc`, so merchant-local datetime strings are never ambiguous. Pass `include_events: true` for the full audit log. Prefer `callback_url` webhooks over polling (REQ-MCP-3); polling remains supported.
 
 ### `modify_booking`
 Amend a queued booking, resolve `needs_input` (`accept_option_index` confirms an offered slot immediately), or change a confirmed booking (modeled as cancel + rebook; a new `booking_id` is returned).

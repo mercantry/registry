@@ -77,6 +77,7 @@ test("import: inserts merchants + provenance, records stay unverified and not bo
   const row = db.prepare("SELECT * FROM merchants WHERE merchant_id = ?").get("aaaaaaaa-0000-4000-8000-000000000001") as any;
   assert.equal(row.verification_status, "unverified");
   assert.equal(row.phone_verified_at, null);
+  assert.equal(row.timezone, "Asia/Hong_Kong"); // per-merchant zone imported from the release
   assert.ok(!deriveBookable(row));
   const prov = db.prepare("SELECT * FROM provenance WHERE merchant_id = ?").all(row.merchant_id) as any[];
   assert.equal(prov.length, 1);
@@ -98,15 +99,118 @@ test("import: re-import upserts without duplicating and preserves ops-owned fiel
   const dir2 = writeRelease([releaseMerchant({ merchant_id: id, name: "Lung King Heen", phone_primary: "+85299999999" })]);
   const result = await importRelease(db, dir2);
   assert.equal(result.inserted, 0);
-  assert.equal(result.updated, 1);
+  // the only source-side difference is the phone, and the verified phone is
+  // preserved — so no served field changed; the disagreement becomes a signal
+  assert.equal(result.updated, 0);
+  assert.equal(result.unchanged, 1);
+  assert.equal(result.phone_conflicts, 1);
 
   const row = db.prepare("SELECT * FROM merchants WHERE merchant_id = ?").get(id) as any;
   assert.equal(row.phone_verified_at, "2026-07-17T00:00:00Z"); // verification preserved
   assert.equal(row.opt_out, 1); // REQ-ING-4: opt-out survives re-import
   assert.equal(row.phone_primary, "+85228204021"); // verified phone NOT overwritten by source change
+  assert.equal(row.source_phone_conflict, "+85299999999"); // …but the disagreement is recorded (REQ-ING-3)
+  assert.equal(row.source_phone_conflict_at, "2026-07-16T00:00:00Z");
   const prov = db.prepare("SELECT source FROM provenance WHERE merchant_id = ? ORDER BY source").all(id) as any[];
   // ingestion provenance refreshed (1 row), verification_call row untouched
   assert.deepEqual(prov.map((p) => p.source), ["overture", "verification_call"]);
+});
+
+test("import: change-aware updated_at — unchanged re-imports don't touch record age", async () => {
+  const db = openTestDb();
+  const id = "aaaaaaaa-0000-4000-8000-000000000001";
+  const dir = writeRelease([releaseMerchant({ merchant_id: id, name: "Lung King Heen" })]);
+  await importRelease(db, dir);
+  const stamped = (db.prepare("SELECT updated_at FROM merchants WHERE merchant_id = ?").get(id) as any).updated_at;
+
+  // identical release re-imported: nothing served changed → updated_at stays
+  const same = writeRelease([releaseMerchant({ merchant_id: id, name: "Lung King Heen" })]);
+  const r2 = await importRelease(db, same);
+  assert.equal(r2.updated, 0);
+  assert.equal(r2.unchanged, 1);
+  assert.equal(r2.phone_conflicts, 0);
+  assert.equal((db.prepare("SELECT updated_at FROM merchants WHERE merchant_id = ?").get(id) as any).updated_at, stamped);
+
+  // a real change bumps updated_at to the new release's stamp
+  const changed = writeRelease([releaseMerchant({ merchant_id: id, name: "Lung King Heen", location: { address: "10 Finance St", neighborhood: "Central", city: "Hong Kong", lat: 22.281, lng: 114.158 } })]);
+  const r3 = await importRelease(db, changed);
+  assert.equal(r3.updated, 1);
+  assert.equal(r3.unchanged, 0);
+  const row = db.prepare("SELECT address, updated_at FROM merchants WHERE merchant_id = ?").get(id) as any;
+  assert.equal(row.address, "10 Finance St");
+  assert.equal(row.updated_at, "2026-07-16T00:00:00Z");
+});
+
+test("import: phone conflict clears when the source re-agrees; ledger records every import", async () => {
+  const db = openTestDb();
+  const id = "aaaaaaaa-0000-4000-8000-000000000001";
+  await importRelease(db, writeRelease([releaseMerchant({ merchant_id: id, name: "Lung King Heen" })]));
+  db.prepare("UPDATE merchants SET phone_verified_at = ?, verification_status = 'phone_verified' WHERE merchant_id = ?").run("2026-07-17T00:00:00Z", id);
+
+  // source disagrees → conflict opens
+  await importRelease(db, writeRelease([releaseMerchant({ merchant_id: id, name: "Lung King Heen", phone_primary: "+85299999999" })]));
+  // source drops the phone entirely → not a new number, conflict stays open
+  const dropped = await importRelease(db, writeRelease([releaseMerchant({ merchant_id: id, name: "Lung King Heen", phone_primary: null })]));
+  assert.equal(dropped.phone_conflicts, 1);
+  assert.equal((db.prepare("SELECT source_phone_conflict FROM merchants WHERE merchant_id = ?").get(id) as any).source_phone_conflict, "+85299999999");
+  // source re-agrees with the verified phone → conflict clears
+  const agreed = await importRelease(db, writeRelease([releaseMerchant({ merchant_id: id, name: "Lung King Heen" })]));
+  assert.equal(agreed.phone_conflicts, 0);
+  const row = db.prepare("SELECT source_phone_conflict, source_phone_conflict_at FROM merchants WHERE merchant_id = ?").get(id) as any;
+  assert.equal(row.source_phone_conflict, null);
+  assert.equal(row.source_phone_conflict_at, null);
+
+  const ledger = db.prepare("SELECT * FROM imports ORDER BY id").all() as any[];
+  assert.equal(ledger.length, 4);
+  assert.equal(ledger[0].city_key, "hk");
+  assert.equal(ledger[0].inserted, 1);
+  assert.equal(ledger[1].phone_conflicts, 1);
+  assert.equal(ledger[3].phone_conflicts, 0);
+  assert.ok(JSON.parse(ledger[0].manifest_json).release);
+});
+
+test("import: verification queue pulls phone conflicts first (REQ-ING-3 change signal)", async () => {
+  const { verificationQueue } = await import("../src/registry/merchants.js");
+  const db = openTestDb();
+  const conflicted = "aaaaaaaa-0000-4000-8000-000000000001";
+  const neverVerified = "bbbbbbbb-0000-4000-8000-000000000002";
+  await importRelease(db, writeRelease([
+    releaseMerchant({ merchant_id: conflicted, name: "Lung King Heen" }),
+    releaseMerchant({ merchant_id: neverVerified, name: "Mak's Noodle", phone_primary: "+85221234567" }),
+  ]));
+  // freshly verified — would NOT be in the queue on age alone
+  db.prepare("UPDATE merchants SET phone_verified_at = ?, verification_status = 'phone_verified' WHERE merchant_id = ?").run(new Date().toISOString(), conflicted);
+  await importRelease(db, writeRelease([
+    releaseMerchant({ merchant_id: conflicted, name: "Lung King Heen", phone_primary: "+85299999999" }),
+    releaseMerchant({ merchant_id: neverVerified, name: "Mak's Noodle", phone_primary: "+85221234567" }),
+  ]));
+
+  const queue = verificationQueue(db) as any[];
+  assert.equal(queue[0].merchant_id, conflicted); // change signal outranks never-verified
+  assert.equal(queue[0].source_phone_conflict, "+85299999999");
+  assert.ok(queue.some((q) => q.merchant_id === neverVerified));
+});
+
+test("registry meta: data block serves release provenance, record age, and conflicts from the ledger", async () => {
+  const { registryMeta } = await import("../src/registry/merchants.js");
+  const db = openTestDb();
+  const meta0 = registryMeta(db) as any;
+  assert.deepEqual(meta0.data.releases, []); // honest emptiness pre-ledger
+  assert.equal(meta0.data.record_age_days.p50, null);
+
+  const id = "aaaaaaaa-0000-4000-8000-000000000001";
+  await importRelease(db, writeRelease([releaseMerchant({ merchant_id: id, name: "Lung King Heen" })]));
+  const meta = registryMeta(db) as any;
+  assert.equal(meta.data.releases.length, 1);
+  const rel = meta.data.releases[0];
+  assert.equal(rel.city_key, "hk");
+  assert.equal(rel.release, "2026-07-16-hk");
+  assert.equal(rel.generated_at, "2026-07-16");
+  assert.equal(rel.merchant_count, 1);
+  assert.ok(rel.source_data_age_days >= 0);
+  assert.equal(rel.churn_vs_previous_release, null); // fixture manifest has no diff block
+  assert.ok(typeof meta.data.record_age_days.p50 === "number");
+  assert.equal(meta.data.source_phone_conflicts, 0);
 });
 
 test("import: refuses checksum mismatch and verification claims", async () => {

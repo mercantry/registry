@@ -9,7 +9,8 @@ import { inBbox, matchesAdminExclude, namesMatch, stableMerchantId, toE164 } fro
 import { parseOvertureFeatureLine, type OvertureDropCounts } from "../src/ingest/connectors/overture.js";
 import { parseFehdXml } from "../src/ingest/connectors/fehd.js";
 import { parseSocrataRows } from "../src/ingest/connectors/losangeles.js";
-import { dedupeStaged, enrichWithOfficial, toReleaseMerchants } from "../src/ingest/conflate.js";
+import { dedupeStaged, enrichWithOfficial, freshDedupeAgreement, freshOfficialAgreement, toReleaseMerchants } from "../src/ingest/conflate.js";
+import { diffReleases } from "../src/ingest/diff.js";
 import { validateRelease } from "../src/ingest/validate.js";
 import { writeRelease } from "../src/ingest/release.js";
 
@@ -242,6 +243,107 @@ test("dedupe merges same-name places within 150m and backfills fields", () => {
   assert.ok(merged);
   assert.equal(merged.phone, "+85228204021"); // backfilled from the duplicate
   assert.equal(merged.confidence, 0.95); // higher-confidence record won
+});
+
+test("source agreement (dedupe): counted only when both sides assert, before backfill", () => {
+  const drops = freshDrops();
+  const at = (line: string, lng: number, lat: number) => line.replace('"coordinates":[114.158,22.281]', `"coordinates":[${lng},${lat}]`);
+  // Pair 1: same phone in different raw formats (both normalize to E.164),
+  // website differing only by protocol/www/trailing slash → both agree.
+  const a1 = parseOvertureFeatureLine(overtureLine({}), HK, STAMP, drops)!;
+  const a2 = parseOvertureFeatureLine(
+    overtureLine({ id: "gers-a2", confidence: 0.6, phones: ["2820 4021"], websites: ["http://www.example.test/lkh/"] }),
+    HK, STAMP, drops,
+  )!;
+  // Pair 2: primary has no phone (backfilled from dup — must NOT count as
+  // compared), websites genuinely disagree.
+  const b1 = parseOvertureFeatureLine(
+    at(overtureLine({ id: "gers-b1", names: { primary: "Jade Garden" }, phones: [], websites: ["https://jade.test"] }), 114.17, 22.29),
+    HK, STAMP, drops,
+  )!;
+  const b2 = parseOvertureFeatureLine(
+    at(overtureLine({ id: "gers-b2", confidence: 0.5, names: { primary: "Jade Garden" }, phones: ["9123 4567"], websites: ["https://other.test"] }), 114.17, 22.29),
+    HK, STAMP, drops,
+  )!;
+
+  const agreement = freshDedupeAgreement();
+  const conflated = dedupeStaged([a1, a2, b1, b2], agreement);
+  assert.equal(conflated.length, 2);
+  assert.deepEqual(agreement.phone, { compared: 1, agreed: 1 });
+  assert.deepEqual(agreement.website, { compared: 2, agreed: 1 });
+  // Backfill still happened — measurement never blocks the merge rules.
+  assert.equal(conflated.find((p) => p.name === "Jade Garden")!.phone, "+85291234567");
+});
+
+test("source agreement (official): address/geo measured on unique matches only, absent sides skipped", () => {
+  const drops = freshDrops();
+  const base = parseOvertureFeatureLine(overtureLine({ names: { primary: "Lung King Heen" } }), HK, STAMP, drops)!;
+  const conflated = dedupeStaged([base]);
+
+  const agreement = freshOfficialAgreement();
+  // FEHD rows carry addresses but no coordinates: the matched row compares
+  // (and agrees — "8 FINANCE STREET, CENTRAL" vs "8 Finance St"); the
+  // unmatched NOWHERE KITCHEN row never enters the comparison; geo stays
+  // uncompared at 0.
+  const stats = enrichWithOfficial(conflated, parseFehdXml(FEHD_EN, FEHD_ZH, STAMP), agreement);
+  assert.deepEqual(stats, { matched: 1, ambiguous: 0, unmatched: 1 });
+  assert.deepEqual(agreement.address, { compared: 1, agreed: 1 });
+  assert.deepEqual(agreement.geo_within_150m, { compared: 0, agreed: 0 });
+
+  // A geocoded register row ~330m out: inside the 500m match radius (still a
+  // match) but outside venue precision — geo compared, not agreed; its
+  // different-format address compares and disagrees.
+  const far = {
+    ref: { source: "fehd_hk", source_id: "999", detail: "test", retrieved_at: STAMP },
+    name: "Lung King Heen",
+    name_local: null,
+    district: null,
+    address: "1 Other Road",
+    lat: 22.281 + 0.003,
+    lng: 114.158,
+  };
+  const stats2 = enrichWithOfficial(conflated, [far], agreement);
+  assert.deepEqual(stats2, { matched: 1, ambiguous: 0, unmatched: 0 });
+  assert.deepEqual(agreement.address, { compared: 2, agreed: 1 });
+  assert.deepEqual(agreement.geo_within_150m, { compared: 1, agreed: 0 });
+});
+
+test("release diff: added/removed/changed/unchanged; id churn on rename; alias order ignored", () => {
+  const drops = freshDrops();
+  const line = (id: string, name: string, lng: number, lat: number) =>
+    overtureLine({ id, names: { primary: name } }).replace('"coordinates":[114.158,22.281]', `"coordinates":[${lng},${lat}]`);
+  const make = (...lines: string[]) =>
+    toReleaseMerchants(HK, dedupeStaged(lines.map((l) => parseOvertureFeatureLine(l, HK, STAMP, drops)!)));
+
+  const previous = {
+    manifest: { release: "2026-07-17-hk", checksum_sha256: "prevsum" } as never,
+    merchants: make(line("g1", "Alpha House", 114.16, 22.28), line("g2", "Beta Kitchen", 114.17, 22.29), line("g3", "Gamma Noodles", 114.18, 22.3)),
+  };
+
+  // Current: Alpha unchanged (aliases reordered — not a change), Beta's phone
+  // changed, Gamma gone, Delta new.
+  const current = make(line("g1", "Alpha House", 114.16, 22.28), line("g2", "Beta Kitchen", 114.17, 22.29), line("g4", "Delta Diner", 114.19, 22.31));
+  const alpha = current.find((m) => m.name === "Alpha House")!;
+  alpha.aliases = [...alpha.aliases].reverse();
+  current.find((m) => m.name === "Beta Kitchen")!.phone_primary = "+85299998888";
+
+  const diff = diffReleases(previous, current);
+  assert.equal(diff.previous_release, "2026-07-17-hk");
+  assert.equal(diff.previous_merchant_count, 3);
+  assert.deepEqual(
+    { added: diff.added, removed: diff.removed, changed: diff.changed, unchanged: diff.unchanged },
+    { added: 1, removed: 1, changed: 1, unchanged: 1 },
+  );
+  assert.equal(diff.field_changes.phone_primary, 1);
+  assert.equal(diff.field_changes.aliases, 0);
+
+  // A rename re-derives merchant_id: churn (add+remove), never a field change.
+  const renamed = make(line("g1", "Alpha House Renamed", 114.16, 22.28));
+  const renameDiff = diffReleases({ manifest: previous.manifest, merchants: [previous.merchants.find((m) => m.name === "Alpha House")!] }, renamed);
+  assert.deepEqual(
+    { added: renameDiff.added, removed: renameDiff.removed, changed: renameDiff.changed },
+    { added: 1, removed: 1, changed: 0 },
+  );
 });
 
 test("provenance rows keep each merged ref's own retrieval time", () => {
@@ -712,6 +814,11 @@ test("release: deterministic ids, sorted ndjson, reproducible checksum, honest m
       sources: [{ source: "overture", license: "CDLA-Permissive-2.0", detail: "test", records: 1, retrieved_at: STAMP }],
       crosscheck: null,
       aliasEnrichment: null,
+      sourceAgreement: {
+        dedupe: { phone: { compared: 0, agreed: 0, rate: null }, website: { compared: 0, agreed: 0, rate: null } },
+        official: {},
+      },
+      diffVsPrevious: null,
       dropped: drops,
       report,
     });

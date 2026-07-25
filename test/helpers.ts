@@ -20,6 +20,7 @@ export function insertMerchant(db: Database, overrides: Record<string, unknown> 
     address: "100 Test St",
     neighborhood: "Mission",
     city: "San Francisco, CA",
+    timezone: "America/Los_Angeles",
     lat: 37.76,
     lng: -122.41,
     phone_primary: "+14155550100",
@@ -41,11 +42,11 @@ export function insertMerchant(db: Database, overrides: Record<string, unknown> 
   };
   db.prepare(
     `INSERT INTO merchants (merchant_id, name, aliases, category, cuisine_tags, attribute_tags,
-      address, neighborhood, city, lat, lng, phone_primary, phone_verified_at, hours, holiday_exceptions,
+      address, neighborhood, city, timezone, lat, lng, phone_primary, phone_verified_at, hours, holiday_exceptions,
       price_band, reservation_policy, requires_deposit, fulfillment_channel, languages, verification_status,
       opt_out, sandbox, max_party_size, created_at, updated_at)
      VALUES (@merchant_id, @name, @aliases, @category, @cuisine_tags, @attribute_tags,
-      @address, @neighborhood, @city, @lat, @lng, @phone_primary, @phone_verified_at, @hours, @holiday_exceptions,
+      @address, @neighborhood, @city, @timezone, @lat, @lng, @phone_primary, @phone_verified_at, @hours, @holiday_exceptions,
       @price_band, @reservation_policy, @requires_deposit, @fulfillment_channel, @languages, @verification_status,
       @opt_out, @sandbox, @max_party_size, @created_at, @updated_at)`,
   ).run(row);

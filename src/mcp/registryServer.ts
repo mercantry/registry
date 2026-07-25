@@ -54,7 +54,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
     {
       title: "Search merchants",
       description:
-        `Filter-based search over the ${config.launchCity} restaurant registry. NOT ranked: results come back in deterministic order (merchant_id ASC by default; distance ASC when lat/lng given and order_by="distance"). Returns compact records with pagination. Use get_merchant for the full signal dump on a specific merchant. All filters are optional and combinable.`,
+        `Filter-based search over the restaurant registry (coverage cities + timezones in get_registry_meta). NOT ranked: results come back in deterministic order (merchant_id ASC by default; distance ASC when lat/lng given and order_by="distance"). Returns compact records with pagination. Use get_merchant for the full signal dump on a specific merchant. All filters are optional and combinable.`,
       inputSchema: {
         neighborhood: z.string().optional().describe("Exact neighborhood name, e.g. 'Mission'"),
         lat: z.number().optional().describe("Latitude for geo-radius filter (requires lng and radius_km)"),
@@ -64,7 +64,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
         attribute_tags: z.array(z.string()).optional().describe("Match ALL of these attributes, e.g. ['outdoor_seating','vegetarian_friendly']"),
         price_band_min: z.number().int().min(1).max(4).optional(),
         price_band_max: z.number().int().min(1).max(4).optional(),
-        open_at: z.string().optional().describe("ISO local datetime; only merchants open at this time"),
+        open_at: z.string().optional().describe("ISO-8601 datetime; only merchants open at this time. With an explicit offset ('2026-07-18T19:00:00+09:00' or trailing Z) the instant is evaluated in each merchant's own timezone; without one it means each merchant's local wall clock"),
         bookable_only: z.boolean().optional().describe("Only merchants the registry can book right now (phone-verified, accepts reservations, not opted out)"),
         party_size: z.number().int().min(1).optional().describe("Only merchants that can seat this party size"),
         order_by: z.enum(["merchant_id", "distance"]).optional(),
@@ -77,22 +77,27 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
         args.lat !== undefined && args.lng !== undefined
           ? { lat: args.lat, lng: args.lng, radius_km: args.radius_km ?? 3 }
           : undefined;
-      return json(
-        searchMerchants(db, {
-          neighborhood: args.neighborhood,
-          near,
-          cuisine_tags: args.cuisine_tags,
-          attribute_tags: args.attribute_tags,
-          price_band_min: args.price_band_min,
-          price_band_max: args.price_band_max,
-          open_at: args.open_at,
-          bookable_only: args.bookable_only,
-          party_size: args.party_size,
-          order_by: args.order_by,
-          limit: args.limit,
-          offset: args.offset,
-        }),
-      );
+      try {
+        return json(
+          searchMerchants(db, {
+            neighborhood: args.neighborhood,
+            near,
+            cuisine_tags: args.cuisine_tags,
+            attribute_tags: args.attribute_tags,
+            price_band_min: args.price_band_min,
+            price_band_max: args.price_band_max,
+            open_at: args.open_at,
+            bookable_only: args.bookable_only,
+            party_size: args.party_size,
+            order_by: args.order_by,
+            limit: args.limit,
+            offset: args.offset,
+          }),
+        );
+      } catch (e) {
+        if (e instanceof Error && e.message === "invalid_open_at") return json({ error: "invalid_open_at" });
+        throw e;
+      }
     },
   );
 
@@ -146,17 +151,18 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
     {
       title: "Place a booking (async)",
       description:
-        "Request a table reservation. Returns booking_id with state 'queued' immediately; fulfillment is asynchronous (a call is placed to the merchant). Poll get_booking_status or supply callback_url for webhooks. If the merchant counter-offers a time within window_minutes and accept_within_window=true, it is auto-accepted (recommended). Otherwise the booking pauses in needs_input for you to resolve via modify_booking. Merchants on the human_call channel are fulfilled by a human operator during the operator window published in get_registry_meta — those bookings queue until worked (up to the channel SLA), so book ahead rather than for the next hour.",
+        "Request a table reservation. Returns booking_id with state 'queued' immediately; fulfillment is asynchronous (a call is placed to the merchant). Poll get_booking_status or supply callback_url for webhooks. RETRY SAFETY: pass a unique client_reference_id (recommended: always); if this call times out or errors ambiguously, retry with the SAME client_reference_id and the registry returns the already-created booking instead of double-booking the restaurant. Never re-call place_booking after a timeout without one. If the merchant counter-offers a time within window_minutes and accept_within_window=true, it is auto-accepted (recommended). Otherwise the booking pauses in needs_input for you to resolve via modify_booking. Merchants on the human_call channel are fulfilled by a human operator during the operator window published in get_registry_meta — those bookings queue until worked (up to the channel SLA), so book ahead rather than for the next hour.",
       inputSchema: {
         merchant_id: z.string(),
         party_size: z.number().int().min(1),
-        datetime: z.string().describe("Requested time, ISO local datetime e.g. '2026-07-18T19:00'"),
+        datetime: z.string().describe("Requested time, ISO-8601. Naive ('2026-07-18T19:00') means the merchant's LOCAL wall time (see the merchant's timezone field); an explicit offset ('2026-07-18T19:00:00+09:00') is also accepted"),
         window_minutes: z.number().int().min(0).max(240).optional().describe("Acceptable +/- window around datetime"),
         accept_within_window: z.boolean().optional().describe("Auto-accept merchant counter-offers inside the window (recommended: true)"),
         reservation_name: z.string().describe("Name for the reservation"),
         contact: z.string().optional().describe("Optional phone/email for confirmation relay to the end human"),
         special_requests: z.string().max(config.mcp.specialRequestMaxChars).optional(),
         callback_url: z.string().url().optional().describe("Webhook URL for booking state-change events"),
+        client_reference_id: z.string().min(1).max(128).optional().describe("Your unique ID for this booking request (a UUID is ideal). Retrying with the same value returns the existing booking (idempotent_replay: true) instead of creating a duplicate; the same value with different parameters is rejected as client_reference_conflict"),
       },
     },
     async (args) =>
@@ -171,6 +177,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
           contact: args.contact,
           special_requests: args.special_requests,
           callback_url: args.callback_url,
+          client_reference_id: args.client_reference_id,
           api_key_id: opts.apiKeyId,
         }),
       ),
@@ -202,7 +209,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
         "Amend a booking before or after the call. For a booking in needs_input: pass accept_option_index to take one of the merchant's offered times (confirms immediately), or pass a new datetime/party_size to re-queue an amended request. Modifying an already-confirmed booking cancels it and books the new request (new booking_id returned).",
       inputSchema: {
         booking_id: z.string(),
-        datetime: z.string().optional(),
+        datetime: z.string().optional().describe("New requested time, ISO-8601; naive means the merchant's local wall time"),
         party_size: z.number().int().min(1).optional(),
         window_minutes: z.number().int().min(0).max(240).optional(),
         accept_option_index: z.number().int().min(0).optional().describe("Index into needs_input_options to accept"),
@@ -248,7 +255,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
     {
       title: "Get registry metadata",
       description:
-        "Evaluate the registry itself: city coverage, merchant/bookable counts, verification and freshness stats, feedback corpus size, schema version, and the documented deterministic ordering rule. Honest by design — including how stale the data is.",
+        "Evaluate the registry itself: per-city coverage (with each city's IANA timezone), merchant/bookable counts, verification and freshness stats, feedback corpus size, schema version, and the documented deterministic ordering rule. Honest by design — including how stale the data is.",
       inputSchema: {},
     },
     async () => json(registryMeta(db)),

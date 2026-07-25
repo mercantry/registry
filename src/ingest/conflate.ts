@@ -3,7 +3,7 @@
  * official-register rows onto them (existence confirmation + local names).
  * Merge rules favor completeness, never invent data.
  */
-import type { AliasEnrichmentStats, CityConfig, OfficialRecord, ProvenanceEntry, ReleaseMerchant, StagedPlace } from "./types.js";
+import type { AgreementRate, AliasEnrichmentStats, CityConfig, OfficialRecord, ProvenanceEntry, ReleaseMerchant, StagedPlace } from "./types.js";
 import type { WikidataPlace } from "./connectors/wikidata.js";
 import { addressesMatch, gridKey, haversineKm, namesMatch, neighborKeys, normalizeName, stableMerchantId } from "./normalize.js";
 
@@ -18,8 +18,37 @@ export interface ConflatedPlace extends StagedPlace {
   wikidata: { ref: StagedPlace["ref"]; added: string[] }[];
 }
 
+/**
+ * Agreement counters (manifest.source_agreement). Counted where the two
+ * assertions meet — inside the merge/match step, before any backfill mutates
+ * either side — so a copied value can never inflate agreement.
+ */
+export interface AgreementCounter {
+  compared: number;
+  agreed: number;
+}
+export interface DedupeAgreement {
+  phone: AgreementCounter;
+  website: AgreementCounter;
+}
+export interface OfficialAgreement {
+  address: AgreementCounter;
+  geo_within_150m: AgreementCounter;
+}
+export const freshDedupeAgreement = (): DedupeAgreement => ({ phone: { compared: 0, agreed: 0 }, website: { compared: 0, agreed: 0 } });
+export const freshOfficialAgreement = (): OfficialAgreement => ({ address: { compared: 0, agreed: 0 }, geo_within_150m: { compared: 0, agreed: 0 } });
+
+export function agreementRate(c: AgreementCounter): AgreementRate {
+  return { ...c, rate: c.compared > 0 ? Math.round((c.agreed / c.compared) * 1000) / 1000 : null };
+}
+
+/** Protocol/www/trailing-slash variance isn't disagreement about the venue's site. */
+function websiteKey(url: string): string {
+  return url.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "");
+}
+
 /** Same name within ~150 m → one place. Higher-confidence record wins field conflicts. */
-export function dedupeStaged(places: StagedPlace[]): ConflatedPlace[] {
+export function dedupeStaged(places: StagedPlace[], agreement?: DedupeAgreement): ConflatedPlace[] {
   const buckets = new Map<string, ConflatedPlace[]>();
   const out: ConflatedPlace[] = [];
 
@@ -31,7 +60,7 @@ export function dedupeStaged(places: StagedPlace[]): ConflatedPlace[] {
           haversineKm(place.lat, place.lng, existing.lat, existing.lng) <= DUP_DISTANCE_KM &&
           namesMatch(place.name, existing.name)
         ) {
-          mergeInto(existing, place);
+          mergeInto(existing, place, agreement);
           merged = true;
           break;
         }
@@ -48,7 +77,17 @@ export function dedupeStaged(places: StagedPlace[]): ConflatedPlace[] {
   return out;
 }
 
-function mergeInto(primary: ConflatedPlace, dup: StagedPlace) {
+function mergeInto(primary: ConflatedPlace, dup: StagedPlace, agreement?: DedupeAgreement) {
+  if (agreement) {
+    if (primary.phone && dup.phone) {
+      agreement.phone.compared++;
+      if (primary.phone === dup.phone) agreement.phone.agreed++;
+    }
+    if (primary.website && dup.website) {
+      agreement.website.compared++;
+      if (websiteKey(primary.website) === websiteKey(dup.website)) agreement.website.agreed++;
+    }
+  }
   primary.merged_refs.push(dup.ref);
   primary.phone ??= dup.phone;
   primary.website ??= dup.website;
@@ -69,7 +108,7 @@ export interface CrosscheckStats {
  * register has coordinates). Only unique matches enrich — an ambiguous match
  * is worse than none, so those are counted and skipped.
  */
-export function enrichWithOfficial(places: ConflatedPlace[], official: OfficialRecord[]): CrosscheckStats {
+export function enrichWithOfficial(places: ConflatedPlace[], official: OfficialRecord[], agreement?: OfficialAgreement): CrosscheckStats {
   const byName = new Map<string, ConflatedPlace[]>();
   for (const place of places) {
     const key = normalizeName(place.name);
@@ -99,6 +138,16 @@ export function enrichWithOfficial(places: ConflatedPlace[], official: OfficialR
       }
     }
     const place = candidates[0];
+    if (agreement) {
+      if (rec.address && place.address) {
+        agreement.address.compared++;
+        if (addressesMatch(rec.address, place.address)) agreement.address.agreed++;
+      }
+      if (rec.lat != null && rec.lng != null) {
+        agreement.geo_within_150m.compared++;
+        if (haversineKm(place.lat, place.lng, rec.lat, rec.lng) <= DUP_DISTANCE_KM) agreement.geo_within_150m.agreed++;
+      }
+    }
     place.official.push(rec);
     if (rec.name_local && !place.aliases.includes(rec.name_local)) place.aliases.push(rec.name_local);
     if (!place.neighborhood && rec.district) place.neighborhood = rec.district;

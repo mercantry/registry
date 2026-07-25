@@ -147,6 +147,62 @@ export interface SourceStats {
   retrieved_at: string;
 }
 
+/**
+ * One field's cross-source agreement: of the pairs where BOTH sides assert a
+ * value, how many agree. Counted at merge/match time BEFORE any backfill, so a
+ * value one side copied from the other can never count as agreement. rate is
+ * null when nothing was comparable.
+ */
+export interface AgreementRate {
+  compared: number;
+  agreed: number;
+  rate: number | null;
+}
+
+/**
+ * How often independent assertions about the same venue agree — quality
+ * evidence a consumer can weigh without sampling records. Evidence-grade, not
+ * independent-audit-grade: register pairs exist only where matching succeeded,
+ * and the (rare) chain match disambiguated BY address tautologically agrees on
+ * address.
+ */
+export interface SourceAgreement {
+  /** Among base records merged as duplicates of one venue (all Overture today). */
+  dedupe: { phone: AgreementRate; website: AgreementRate };
+  /**
+   * Register row vs the base record it uniquely matched, per official source.
+   * geo_within_150m holds register coordinates to venue precision (the dedupe
+   * radius) even though matching only constrains them to 500m.
+   */
+  official: Record<string, { address: AgreementRate; geo_within_150m: AgreementRate }>;
+}
+
+/**
+ * Release-over-release delta for the same city (P2 freshness groundwork).
+ * merchant_id derives from name+coordinates, so a renamed or moved venue shows
+ * up as one removed + one added — field_changes covers only fields that can
+ * change under a stable id. The manifest carries null when CI had no previous
+ * release to compare against (first run, expired artifact): fail-open, never
+ * blocks a release.
+ */
+export interface ReleaseDiff {
+  previous_release: string;
+  previous_checksum_sha256: string;
+  previous_merchant_count: number;
+  added: number;
+  removed: number;
+  changed: number;
+  unchanged: number;
+  field_changes: {
+    phone_primary: number;
+    website: number;
+    address: number;
+    neighborhood: number;
+    aliases: number;
+    cuisine_tags: number;
+  };
+}
+
 export interface FieldCoverage {
   phone: number;
   website: number;
@@ -173,6 +229,10 @@ export interface ReleaseManifest {
   official_crosscheck: { matched: number; ambiguous: number; unmatched: number } | null;
   /** Wikidata local-name enrichment outcome (null when the connector didn't run). */
   alias_enrichment: AliasEnrichmentStats | null;
+  /** Cross-source agreement rates (see SourceAgreement). */
+  source_agreement: SourceAgreement;
+  /** Delta vs the previous release for this city; null when none was available. */
+  diff_vs_previous: ReleaseDiff | null;
   /** Schema defaults carried with NO source behind them — consumers must not read these as facts. */
   unsourced_defaults: string[];
   dropped: { non_restaurant: number; denied_category: number; unnamed: number; no_geometry: number; out_of_bbox: number; out_of_admin: number; no_address: number; invalid_phone: number };

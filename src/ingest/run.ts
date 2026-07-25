@@ -18,13 +18,15 @@ import { fetchFehd, parseFehdXml } from "./connectors/fehd.js";
 import { fetchLaOpenData, parseSocrataRows } from "./connectors/losangeles.js";
 import { fetchTokyoRegister, parseTokyoLicenceCsv } from "./connectors/tokyo.js";
 import { fetchWikidataPlaces, parseWikidataResults } from "./connectors/wikidata.js";
-import { dedupeStaged, enrichWithOfficial, enrichWithWikidata, toReleaseMerchants, type CrosscheckStats } from "./conflate.js";
+import { agreementRate, dedupeStaged, enrichWithOfficial, enrichWithWikidata, freshDedupeAgreement, freshOfficialAgreement, toReleaseMerchants, type CrosscheckStats, type OfficialAgreement } from "./conflate.js";
 import { validateRelease } from "./validate.js";
 import { writeRelease } from "./release.js";
-import { SOURCE_LICENSES, type AliasEnrichmentStats, type OfficialRecord, type SourceStats } from "./types.js";
+import { diffReleases } from "./diff.js";
+import { loadRelease } from "./tranche.js";
+import { SOURCE_LICENSES, type AliasEnrichmentStats, type OfficialRecord, type ReleaseDiff, type SourceAgreement, type SourceStats } from "./types.js";
 
 function parseArgs(argv: string[]) {
-  const args: { city?: string; overture?: string; stamp?: string; out: string; printBbox: boolean; skipOfficial: boolean; officialFiles: Map<string, string> } = {
+  const args: { city?: string; overture?: string; stamp?: string; out: string; previous?: string; printBbox: boolean; skipOfficial: boolean; officialFiles: Map<string, string> } = {
     out: "data/releases",
     printBbox: false,
     skipOfficial: false,
@@ -36,6 +38,7 @@ function parseArgs(argv: string[]) {
     else if (a === "--overture") args.overture = argv[++i];
     else if (a === "--stamp") args.stamp = argv[++i];
     else if (a === "--out") args.out = argv[++i];
+    else if (a === "--previous") args.previous = argv[++i];
     else if (a === "--print-bbox") args.printBbox = true;
     else if (a === "--skip-official") args.skipOfficial = true;
     else if (a === "--official-file") {
@@ -92,18 +95,21 @@ async function main() {
   const { places: staged, drops } = await loadOverture(args.overture, city, retrievedAt);
   console.log(`[${city.key}] ${staged.length} restaurant records (dropped: ${JSON.stringify(drops)})`);
 
-  const conflated = dedupeStaged(staged);
+  const dedupeAgreement = freshDedupeAgreement();
+  const conflated = dedupeStaged(staged, dedupeAgreement);
   console.log(`[${city.key}] ${conflated.length} after dedupe (${staged.length - conflated.length} merged)`);
 
   const sources: SourceStats[] = [
     { source: "overture", ...SOURCE_LICENSES.overture, records: staged.length, retrieved_at: retrievedAt },
   ];
   let crosscheck: CrosscheckStats | null = null;
+  const officialAgreement: Record<string, OfficialAgreement> = {};
   if (!args.skipOfficial) {
     for (const source of city.officialSources) {
       console.log(`[${city.key}] loading official register: ${source}`);
       const official = await loadOfficial(source, retrievedAt, args.officialFiles);
-      const stats = enrichWithOfficial(conflated, official);
+      officialAgreement[source] = freshOfficialAgreement();
+      const stats = enrichWithOfficial(conflated, official, officialAgreement[source]);
       crosscheck = crosscheck
         ? { matched: crosscheck.matched + stats.matched, ambiguous: crosscheck.ambiguous + stats.ambiguous, unmatched: crosscheck.unmatched + stats.unmatched }
         : stats;
@@ -140,6 +146,38 @@ async function main() {
     process.exit(1);
   }
 
+  const sourceAgreement: SourceAgreement = {
+    dedupe: { phone: agreementRate(dedupeAgreement.phone), website: agreementRate(dedupeAgreement.website) },
+    official: Object.fromEntries(
+      Object.entries(officialAgreement).map(([source, a]) => [
+        source,
+        { address: agreementRate(a.address), geo_within_150m: agreementRate(a.geo_within_150m) },
+      ]),
+    ),
+  };
+  console.log(`[${city.key}] source agreement: ${JSON.stringify(sourceAgreement)}`);
+
+  // Diff runs after validation: a release that fails the gate never becomes a
+  // baseline, so the comparison target is always a corpus that shipped.
+  let diffVsPrevious: ReleaseDiff | null = null;
+  if (args.previous) {
+    try {
+      const previous = await loadRelease(args.previous);
+      if (previous.manifest.city_key !== city.key) {
+        console.warn(`[${city.key}] --previous is a ${previous.manifest.city_key} release — diff_vs_previous stays null`);
+      } else {
+        diffVsPrevious = diffReleases(previous, merchants);
+        console.log(`[${city.key}] diff vs ${previous.manifest.release}: ${JSON.stringify(diffVsPrevious)}`);
+      }
+    } catch (err) {
+      // Fail-open (ABR lesson): an unreadable previous degrades to a
+      // diff-less manifest, loudly, never blocks today's release.
+      console.warn(`[${city.key}] previous release unreadable — diff_vs_previous stays null. ${String(err)}`);
+    }
+  } else {
+    console.log(`[${city.key}] no --previous release provided — diff_vs_previous stays null`);
+  }
+
   const { dir, manifest } = await writeRelease({
     outDir: args.out,
     stamp: args.stamp,
@@ -148,6 +186,8 @@ async function main() {
     sources,
     crosscheck,
     aliasEnrichment,
+    sourceAgreement,
+    diffVsPrevious,
     dropped: drops,
     report,
   });

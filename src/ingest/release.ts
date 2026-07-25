@@ -6,7 +6,7 @@
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AliasEnrichmentStats, CityConfig, ReleaseManifest, ReleaseMerchant, SourceStats } from "./types.js";
+import type { AliasEnrichmentStats, CityConfig, ReleaseDiff, ReleaseManifest, ReleaseMerchant, SourceAgreement, SourceStats } from "./types.js";
 import { sha256Hex } from "./normalize.js";
 import { UNSOURCED_DEFAULTS, type CrosscheckStats } from "./conflate.js";
 import type { ValidationReport } from "./validate.js";
@@ -19,6 +19,8 @@ export interface WriteReleaseOptions {
   sources: SourceStats[];
   crosscheck: CrosscheckStats | null;
   aliasEnrichment: AliasEnrichmentStats | null;
+  sourceAgreement: SourceAgreement;
+  diffVsPrevious: ReleaseDiff | null;
   dropped: ReleaseManifest["dropped"];
   report: ValidationReport;
 }
@@ -39,6 +41,8 @@ export async function writeRelease(opts: WriteReleaseOptions): Promise<{ dir: st
     field_coverage: opts.report.field_coverage,
     official_crosscheck: opts.crosscheck,
     alias_enrichment: opts.aliasEnrichment,
+    source_agreement: opts.sourceAgreement,
+    diff_vs_previous: opts.diffVsPrevious,
     unsourced_defaults: UNSOURCED_DEFAULTS,
     dropped: opts.dropped,
     checksum_sha256: sha256Hex(ndjson),

@@ -132,7 +132,7 @@ export function buildOpenApi(baseUrl: string) {
             { name: "attribute_tags", in: "query", schema: { type: "string" }, description: "Comma-separated; matches ALL." },
             { name: "price_band_min", in: "query", schema: { type: "integer", minimum: 1, maximum: 4 } },
             { name: "price_band_max", in: "query", schema: { type: "integer", minimum: 1, maximum: 4 } },
-            { name: "open_at", in: "query", schema: { type: "string" }, description: "ISO local datetime; only merchants open then." },
+            { name: "open_at", in: "query", schema: { type: "string" }, description: "ISO-8601 datetime; only merchants open then. Explicit offset = exact instant (evaluated per merchant timezone); naive = each merchant's local wall clock." },
             { name: "bookable_only", in: "query", schema: { type: "boolean" } },
             { name: "party_size", in: "query", schema: { type: "integer", minimum: 1 } },
             { name: "order_by", in: "query", schema: { type: "string", enum: ["merchant_id", "distance"] } },
@@ -202,8 +202,11 @@ export function buildOpenApi(baseUrl: string) {
       "/v1/bookings": {
         post: {
           summary: "Place a reservation (async — a call is placed to the merchant)",
-          description: "Returns booking_id with state=queued immediately. Poll GET /v1/bookings/{id} or supply callback_url for webhooks. With accept_within_window=true (recommended), merchant counter-offers inside ±window_minutes auto-confirm without a round-trip.",
+          description: "Returns booking_id with state=queued immediately. Poll GET /v1/bookings/{id} or supply callback_url for webhooks. With accept_within_window=true (recommended), merchant counter-offers inside ±window_minutes auto-confirm without a round-trip. Retry safety: send a unique client_reference_id (or Idempotency-Key header); retrying with the same value returns the existing booking (200, idempotent_replay=true) instead of double-booking.",
           security: [{}, { apiKey: [] }],
+          parameters: [
+            { name: "Idempotency-Key", in: "header", required: false, schema: { type: "string", maxLength: 128 }, description: "Alias for body field client_reference_id (body wins if both are sent)." },
+          ],
           requestBody: {
             required: true,
             content: {
@@ -214,13 +217,14 @@ export function buildOpenApi(baseUrl: string) {
                   properties: {
                     merchant_id: { type: "string", format: "uuid" },
                     party_size: { type: "integer", minimum: 1 },
-                    datetime: { type: "string", description: "Requested time, ISO local datetime, e.g. 2026-07-18T19:00" },
+                    datetime: { type: "string", description: "Requested time, ISO-8601. Naive (2026-07-18T19:00) means the merchant's local wall time; an explicit offset is also accepted." },
                     window_minutes: { type: "integer", minimum: 0, maximum: 240 },
                     accept_within_window: { type: "boolean" },
                     reservation_name: { type: "string" },
                     contact: { type: "string", description: "Optional phone/email for confirmation relay to the end human." },
                     special_requests: { type: "string", maxLength: config.mcp.specialRequestMaxChars },
                     callback_url: { type: "string", description: "Webhook URL for booking state-change events." },
+                    client_reference_id: { type: "string", maxLength: 128, description: "Your unique ID for this booking request (a UUID is ideal). Retrying with the same value returns the existing booking instead of creating a duplicate; scoped per API key." },
                   },
                 },
               },
@@ -228,8 +232,10 @@ export function buildOpenApi(baseUrl: string) {
           },
           responses: {
             "201": { description: "Accepted: {ok, booking_id, state: queued}." },
+            "200": { description: "Idempotent replay: {ok, booking_id, state, idempotent_replay: true} — an existing booking matched client_reference_id; nothing new was created." },
             "400": { description: "Structured rejection, e.g. merchant_not_phone_verified, requires_deposit_not_supported_in_v1, party_size_out_of_range." },
             "401": { description: "Invalid or throttled API key (keys are optional; omit rather than guess)." },
+            "409": { description: "client_reference_conflict: this client_reference_id was already used with different request parameters — use a fresh reference for a genuinely new booking." },
           },
         },
       },
