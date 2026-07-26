@@ -6,7 +6,8 @@ import { agentError, type AgentErrorDetail } from "../registry/errors.js";
 import { deriveBookable, getMerchantRow } from "../registry/merchants.js";
 import { parseInstant } from "../registry/time.js";
 import { logEvent, transition } from "./stateMachine.js";
-import type { BookingState } from "../registry/types.js";
+import type { BookingState, SandboxOutcome } from "../registry/types.js";
+import { SANDBOX_OUTCOMES } from "../registry/types.js";
 
 type Row = Record<string, any>;
 
@@ -23,6 +24,8 @@ export interface PlaceBookingInput {
   callback_url?: string;
   /** Agent-supplied idempotency key: retrying with the same value returns the existing booking. */
   client_reference_id?: string;
+  /** Sandbox merchants only: force the simulated call's result instead of drawing one (AGENT-UX §6). */
+  sandbox_outcome?: string;
   api_key_id?: string;
 }
 
@@ -78,6 +81,10 @@ function requestFingerprint(input: PlaceBookingInput): string {
     contact: input.contact ?? null,
     special_requests: input.special_requests ?? null,
     callback_url: input.callback_url ?? null,
+    // Added conditionally so a request that does not use the field hashes
+    // byte-identically to the pre-sandbox_outcome implementation — an existing
+    // stored fingerprint must never turn into a spurious conflict.
+    ...(input.sandbox_outcome !== undefined ? { sandbox_outcome: input.sandbox_outcome } : {}),
   };
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
@@ -115,6 +122,13 @@ export function placeBooking(db: Database, input: PlaceBookingInput): PlaceBooki
   // rather than an incidental `merchant_not_phone_verified`.
   const elig = fulfillmentEligibility(merchant);
   if (!elig.ok) return agentError(elig.reason!);
+  // Forced test outcomes are a sandbox affordance. Rejected rather than
+  // silently ignored on a real merchant, so that when a live channel opens no
+  // caller can believe it is steering a real restaurant's answer.
+  if (input.sandbox_outcome !== undefined) {
+    if (!SANDBOX_OUTCOMES.includes(input.sandbox_outcome as SandboxOutcome)) return agentError("invalid_sandbox_outcome");
+    if (!merchant.sandbox) return agentError("sandbox_outcome_requires_sandbox_merchant");
+  }
   if (!deriveBookable(merchant as any)) {
     const reason = merchant.opt_out
       ? "merchant_opted_out"
@@ -148,8 +162,8 @@ export function placeBooking(db: Database, input: PlaceBookingInput): PlaceBooki
         booking_id, merchant_id, api_key_id, state, party_size, requested_time,
         window_minutes, accept_within_window, reservation_name, contact,
         special_requests, callback_url, client_reference_id, request_fingerprint,
-        attempts, sla_deadline, created_at, updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`,
+        sandbox_outcome, attempts, sla_deadline, created_at, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`,
     ).run(
       bookingId,
       input.merchant_id,
@@ -165,6 +179,7 @@ export function placeBooking(db: Database, input: PlaceBookingInput): PlaceBooki
       input.callback_url ?? null,
       ref ?? null,
       ref ? fingerprint : null,
+      input.sandbox_outcome ?? null,
       sla,
       at,
       at,
@@ -206,6 +221,7 @@ export function bookingStatus(db: Database, bookingId: string) {
     booking_id: b.booking_id,
     merchant_id: b.merchant_id,
     client_reference_id: b.client_reference_id ?? undefined,
+    sandbox_outcome: b.sandbox_outcome ?? undefined,
     state: b.state,
     failure_reason: b.failure_reason ?? undefined,
     requested_time: b.requested_time,

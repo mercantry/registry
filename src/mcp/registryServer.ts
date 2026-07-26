@@ -34,6 +34,7 @@ import {
 } from "../orchestrator/bookings.js";
 import { feedbackHistory, submitFeedback } from "../feedback/feedback.js";
 import { agentError, docsUrl } from "../registry/errors.js";
+import { SANDBOX_OUTCOMES } from "../registry/types.js";
 
 export interface RegistryServerOptions {
   /** Resolved developer key id — attributed to bookings for abuse control + metrics (never gating). */
@@ -78,6 +79,12 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
         open_at: z.string().optional().describe("ISO-8601 datetime; only merchants open at this time. With an explicit offset ('2026-07-18T19:00:00+09:00' or trailing Z) the instant is evaluated in each merchant's own timezone; without one it means each merchant's local wall clock"),
         bookable_only: z.boolean().optional().describe("Only merchants the registry can book right now (phone-verified, accepts reservations, not opted out)"),
         party_size: z.number().int().min(1).optional().describe("Only merchants that can seat this party size"),
+        sandbox: z
+          .boolean()
+          .optional()
+          .describe(
+            "Filter by merchant kind. true = sandbox test merchants only (safe integration targets: they book end-to-end and return a SIMULATED confirmation, never dialing a real venue). false = real merchants only — use this for any booking a human will act on. Omitted = both. Every result carries `sandbox`; never present a sandbox confirmation to a user as a real reservation.",
+          ),
         order_by: z.enum(["merchant_id", "distance"]).optional(),
         limit: z.number().int().min(1).max(config.mcp.searchPageSizeMax).optional(),
         offset: z.number().int().min(0).optional(),
@@ -100,6 +107,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
             open_at: args.open_at,
             bookable_only: args.bookable_only,
             party_size: args.party_size,
+            sandbox: args.sandbox,
             order_by: args.order_by,
             limit: args.limit,
             offset: args.offset,
@@ -174,6 +182,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
         special_requests: z.string().max(config.mcp.specialRequestMaxChars).optional(),
         callback_url: z.string().url().optional().describe("Webhook URL for booking state-change events"),
         client_reference_id: z.string().min(1).max(128).optional().describe("Your unique ID for this booking request (a UUID is ideal). Retrying with the same value returns the existing booking (idempotent_replay: true) instead of creating a duplicate; the same value with different parameters is rejected as client_reference_conflict"),
+        sandbox_outcome: z.enum(SANDBOX_OUTCOMES).optional().describe("TEST ONLY, sandbox merchants (sandbox: true): force the simulated call's result so you can exercise a specific branch on demand — confirmed, no_answer (retries then fails), counter_offer (pauses in needs_input), fully_booked, merchant_declined, bad_data. Rejected for real merchants; omit it in production"),
       },
     },
     async (args) =>
@@ -189,6 +198,7 @@ export function buildRegistryServer(db: Database, opts: RegistryServerOptions = 
           special_requests: args.special_requests,
           callback_url: args.callback_url,
           client_reference_id: args.client_reference_id,
+          sandbox_outcome: args.sandbox_outcome,
           api_key_id: opts.apiKeyId,
         }),
       ),

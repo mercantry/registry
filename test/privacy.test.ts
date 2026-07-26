@@ -75,14 +75,14 @@ test("booking columns holding caller-supplied personal data are all named in the
     "window_minutes", "accept_within_window", "confirmed_time", "reservation_name", "contact", "special_requests",
     "callback_url", "needs_input_options", "needs_input_deadline", "merchant_instructions", "confirmation_code",
     "attempts", "next_attempt_at", "sla_deadline", "notify_issue_number", "notify_issue_closed",
-    "client_reference_id", "request_fingerprint", "created_at", "updated_at",
+    "client_reference_id", "request_fingerprint", "sandbox_outcome", "created_at", "updated_at",
   ]);
   const actual = (db.prepare("PRAGMA table_info(bookings)").all() as { name: string }[]).map((c) => c.name);
   const added = actual.filter((c) => !known.has(c));
   assert.deepEqual(added, [], `new bookings column(s) ${added.join(", ")} — check /privacy discloses them, then update this list`);
 
   const html = await (await fetch(`${base()}/privacy`)).text();
-  for (const phrase of ["reservation name", "special requests", "callback_url", "client_reference_id"])
+  for (const phrase of ["reservation name", "special requests", "callback_url", "client_reference_id", "sandbox_outcome"])
     assert.match(html, new RegExp(phrase), `booking field not described: ${phrase}`);
 });
 

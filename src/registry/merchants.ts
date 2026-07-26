@@ -136,6 +136,15 @@ export interface SearchResultItem {
   reservation_policy: string;
   bookable: boolean;
   verification_status: string;
+  /**
+   * Whether this is a sandbox test merchant. Carried on the compact record
+   * deliberately: a sandbox merchant books end-to-end and returns a *simulated*
+   * confirmation, so an agent that cannot tell one from a real venue in search
+   * results can hand its user a confirmation for a restaurant that does not
+   * exist (note 004's worst-case trust incident, inverted). Every other
+   * detail-only field stays out — this one is a safety signal, not enrichment.
+   */
+  sandbox: boolean;
   distance_km?: number;
 }
 
@@ -172,6 +181,11 @@ export function searchMerchants(
   if (f.party_size) {
     where.push("max_party_size >= ?");
     params.push(f.party_size);
+  }
+  if (f.sandbox !== undefined) {
+    // Tri-state: omitted keeps the historical behavior (both kinds served).
+    where.push("sandbox = ?");
+    params.push(f.sandbox ? 1 : 0);
   }
   if (f.bookable_only) {
     // Same predicate as deriveBookable/registryMeta.
@@ -308,6 +322,7 @@ function searchResultItem(m: Merchant, distance_km?: number): SearchResultItem {
     reservation_policy: m.reservation_policy,
     bookable: m.bookable,
     verification_status: m.verification_status,
+    sandbox: m.sandbox,
     ...(distance_km !== undefined ? { distance_km: Math.round(distance_km * 100) / 100 } : {}),
   };
 }

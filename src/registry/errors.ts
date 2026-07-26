@@ -13,6 +13,7 @@
  * allowed party-size range for the merchant being booked).
  */
 import { config } from "../config.js";
+import { SANDBOX_OUTCOMES } from "./types.js";
 
 export interface AgentErrorDetail {
   message?: string;
@@ -107,6 +108,18 @@ export const ERROR_CATALOG: Record<string, CatalogEntry> = {
     status: 409,
     field: "client_reference_id",
     message: "This client_reference_id was already used with different request parameters. A reference names one exact request: retry with identical parameters to replay it, or use a fresh reference for a new booking.",
+  },
+  invalid_sandbox_outcome: {
+    status: 400,
+    field: "sandbox_outcome",
+    allowed: SANDBOX_OUTCOMES.join(" | "),
+    example: "confirmed",
+    message: "sandbox_outcome must be one of the documented test outcomes. Omit it to get the default pseudo-random outcome.",
+  },
+  sandbox_outcome_requires_sandbox_merchant: {
+    status: 400,
+    field: "sandbox_outcome",
+    message: "sandbox_outcome forces the result of a simulated call and is accepted only for sandbox merchants (sandbox: true). A real merchant's outcome comes from the real call — omit the field.",
   },
 
   /* modify_booking / cancel_booking */

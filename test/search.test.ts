@@ -74,3 +74,39 @@ test("party_size and bookable_only filters", () => {
   assert.equal(r.total, 1);
   assert.equal(r.results[0].merchant_id, big);
 });
+
+test("sandbox is visible on compact records and filterable in both directions", () => {
+  const db = testDb();
+  const testFixture = insertMerchant(db, { sandbox: 1, name: "Sandbox Trattoria" });
+  const realVenue = insertMerchant(db, { sandbox: 0, name: "Real Trattoria" });
+
+  // Visible: a sandbox merchant books end-to-end and returns a simulated
+  // confirmation, so an agent must be able to tell one apart in search results
+  // — not only after a second get_merchant call.
+  const all = searchMerchants(db, {});
+  assert.equal(all.total, 2, "omitting the filter serves both kinds, as it always has");
+  assert.deepEqual(
+    Object.fromEntries(all.results.map((r) => [r.merchant_id, r.sandbox])),
+    { [testFixture]: true, [realVenue]: false },
+  );
+
+  const sandboxOnly = searchMerchants(db, { sandbox: true });
+  assert.deepEqual(sandboxOnly.results.map((r) => r.merchant_id), [testFixture]);
+
+  const realOnly = searchMerchants(db, { sandbox: false });
+  assert.deepEqual(realOnly.results.map((r) => r.merchant_id), [realVenue]);
+});
+
+test("sandbox filter survives the geo/open_at path, which filters in JS", () => {
+  const db = testDb();
+  insertMerchant(db, { sandbox: 1, lat: 37.76, lng: -122.41 });
+  const realVenue = insertMerchant(db, { sandbox: 0, lat: 37.761, lng: -122.411 });
+
+  const r = searchMerchants(db, {
+    sandbox: false,
+    near: { lat: 37.76, lng: -122.41, radius_km: 2 },
+    order_by: "distance",
+  });
+  assert.deepEqual(r.results.map((m) => m.merchant_id), [realVenue]);
+  assert.equal(r.results[0].sandbox, false);
+});

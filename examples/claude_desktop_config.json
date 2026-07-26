@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mercantry": {
+      "type": "http",
+      "url": "https://agentic-commerce-registry.fly.dev/mcp"
+    }
+  }
+}

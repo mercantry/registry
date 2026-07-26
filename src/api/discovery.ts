@@ -125,6 +125,7 @@ export function discoveryRouter(db: Database): express.Router {
       llms_txt: `${base}/llms.txt`,
       agent_card: `${base}/.well-known/agent-card.json`,
       privacy_policy: `${base}/privacy`,
+      demo: `${base}/demo`,
       data_policy: {
         ranking: "none — deterministic, documented ordering only",
         reviews: "transaction-verified agent feedback only; never scraped, never scored",
@@ -215,7 +216,8 @@ export function discoveryRouter(db: Database): express.Router {
           name: "Reservation booking (async)",
           description:
             "Async table reservations: get_availability (honest v1 — availability is confirmed at booking time, not held live), place_booking, get_booking_status (poll or callback_url webhooks), modify_booking, cancel_booking. Bookings are accepted only for phone-verified bookable merchants. " +
-            bookingLiveness,
+            bookingLiveness +
+            ` Copy-pasteable walkthrough with live sandbox ids and forced test outcomes: ${base}/demo.`,
           tags: ["booking", "reservations", "async", "sandbox"],
           examples: [
             "Book a table for 4 at a sandbox merchant tomorrow 19:00 and poll until confirmed",

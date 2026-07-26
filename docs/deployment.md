@@ -164,6 +164,11 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<host>/ops/api/overview   # mus
   sources from the imported release manifests — so the page cannot claim less
   collection than actually happens. Serves with a draft banner and `noindex`
   until `PRIVACY_POLICY_REVIEWED=1` records the human sign-off.
+- `GET /demo` — the standing demo & reviewer guide (the second directory-submission
+  prerequisite, alongside `/privacy`): the access model stated plainly (there is no
+  account to issue — reads and sandbox bookings are open), sandbox merchant ids read
+  live from the database so a published id is always bookable, a four-call
+  walkthrough, and the `sandbox_outcome` contract.
 - `GET /robots.txt` — AI crawlers welcomed; `/ops/` and `/status/` disallowed.
 - `GET /healthz` — cheap probe for uptime monitors (`{"ok":true,...}`).
 

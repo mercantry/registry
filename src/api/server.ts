@@ -50,6 +50,7 @@ import { mcpRouter } from "../mcp/http.js";
 import { discoveryRouter } from "./discovery.js";
 import { landingRouter } from "./landing.js";
 import { privacyRouter } from "./privacy.js";
+import { demoRouter } from "./demo.js";
 import { publicStats } from "./stats.js";
 import { keyFromHeaders, keysRouter, resolveApiKey } from "./keys.js";
 import { buildOpenApi, v1Index } from "./openapi.js";
@@ -124,6 +125,9 @@ app.use(landingRouter(db));
 /* Public privacy policy at /privacy (crawlable; directories require the URL). */
 app.use(privacyRouter(db));
 
+/* Public demo & reviewer guide at /demo (live sandbox ids + the forced-outcome contract). */
+app.use(demoRouter(db));
+
 /* --------------------------------------------- */
 /* Agent-facing REST (mirror of the MCP surface)  */
 /* --------------------------------------------- */
@@ -148,6 +152,8 @@ app.get("/v1/merchants", (req, res) => {
         open_at: q.open_at as string | undefined,
         bookable_only: q.bookable_only === "true",
         party_size: q.party_size ? Number(q.party_size) : undefined,
+        // Tri-state: absent (or any other value) leaves both kinds served.
+        sandbox: q.sandbox === "true" ? true : q.sandbox === "false" ? false : undefined,
         order_by: q.order_by as any,
         limit: q.limit ? Number(q.limit) : undefined,
         offset: q.offset ? Number(q.offset) : undefined,

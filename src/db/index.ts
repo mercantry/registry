@@ -64,6 +64,10 @@ export function migrate(d: Database.Database) {
   addColumn("merchants", "website", "website TEXT");
   addColumn("bookings", "client_reference_id", "client_reference_id TEXT"); // idempotent place_booking (agent retry safety)
   addColumn("bookings", "request_fingerprint", "request_fingerprint TEXT");
+  // Sandbox "test cards": the caller-selected simulated outcome, when one was
+  // supplied. NULL keeps the original pseudo-random draw, so pre-existing rows
+  // behave exactly as before.
+  addColumn("bookings", "sandbox_outcome", "sandbox_outcome TEXT");
   // Uniqueness scope is per developer key (COALESCE: NULL api_key_id rows — anonymous
   // callers — share one scope, so references should be UUIDs). Lives here, not in
   // schema.sql: on a pre-migration database schema.sql executes before the column

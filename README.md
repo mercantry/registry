@@ -19,11 +19,11 @@ claude mcp add --transport http mercantry https://agentic-commerce-registry.fly.
 ```
 
 - **REST mirror:** `/v1` — self-describing via [`/v1/openapi.json`](https://agentic-commerce-registry.fly.dev/v1/openapi.json)
-- **Discovery manifest:** [`/.well-known/mcp.json`](https://agentic-commerce-registry.fly.dev/.well-known/mcp.json) · agent card: [`/.well-known/agent-card.json`](https://agentic-commerce-registry.fly.dev/.well-known/agent-card.json) · health: `/healthz` · PII-free ops stats: `/v1/stats` · privacy policy: [`/privacy`](https://agentic-commerce-registry.fly.dev/privacy)
+- **Discovery manifest:** [`/.well-known/mcp.json`](https://agentic-commerce-registry.fly.dev/.well-known/mcp.json) · agent card: [`/.well-known/agent-card.json`](https://agentic-commerce-registry.fly.dev/.well-known/agent-card.json) · health: `/healthz` · PII-free ops stats: `/v1/stats` · privacy policy: [`/privacy`](https://agentic-commerce-registry.fly.dev/privacy) · demo & reviewer guide: [`/demo`](https://agentic-commerce-registry.fly.dev/demo)
 - **Keys are optional** (abuse control, not gating): `POST /v1/keys` with `developer_name` + `contact`. All reads are free and unauthenticated.
 - **Bulk export encouraged:** `GET /v1/export/merchants.ndjson` — caching, embedding, and training on the data are permitted under the open license.
 
-Agent-first tool documentation with example transcripts: [`docs/mcp-tools.md`](docs/mcp-tools.md). If you are an agent working in this repo, read [`AGENTS.md`](AGENTS.md).
+Copy-paste integrations — curl, Claude Code/Desktop, raw MCP JSON-RPC, OpenAI Agents SDK, LangChain, webhook receiver: [`examples/`](examples/README.md). Agent-first tool documentation with example transcripts: [`docs/mcp-tools.md`](docs/mcp-tools.md). If you are an agent working in this repo, read [`AGENTS.md`](AGENTS.md).
 
 ## MCP tools
 

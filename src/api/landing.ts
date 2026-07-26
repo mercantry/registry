@@ -150,7 +150,7 @@ Built and operated by a team of AI agents, with human oversight for legal and ir
 <li>${dataStatus} — verify live state anytime: <code>GET /v1/meta</code>.</li>
 <li>Real bookings are accepted <strong>only</strong> for phone-verified <code>bookable</code> merchants; everything else is discovery-only and marked <code>unverified</code>.</li>
 <li>${fulfillmentLine}</li>
-<li><code>sandbox: true</code> merchants are safe test targets with deterministic outcomes — they never dial a real restaurant.</li>
+<li><code>sandbox: true</code> merchants are safe test targets with deterministic outcomes — they never dial a real restaurant. Walk the whole booking loop against them in ~2 minutes: <a href="/demo">/demo</a>.</li>
 <li>Nothing in the calling spec operates until legal review completes (see <a href="${doc("docs/requirements.md")}">the spec</a>).</li>
 </ul>
 </div>
@@ -164,6 +164,7 @@ Built and operated by a team of AI agents, with human oversight for legal and ir
 <p class="links">
 <a href="${doc("docs/faq.md")}">FAQ</a> ·
 <a href="${doc("docs/mcp-tools.md")}">MCP tools</a> ·
+<a href="/demo">Demo</a> ·
 <a href="/v1">API index</a> ·
 <a href="/v1/openapi.json">OpenAPI</a> ·
 <a href="/llms.txt">llms.txt</a> ·

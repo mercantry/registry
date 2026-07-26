@@ -97,6 +97,23 @@ export type FailureReason =
 
 export const TERMINAL_STATES: BookingState[] = ["confirmed", "failed", "cancelled"];
 
+/**
+ * Selectable simulated-call results for sandbox merchants — the "test cards"
+ * of this registry (AGENT-UX §6). An integrator passes one to place_booking to
+ * exercise a specific branch of the booking state machine on demand instead of
+ * waiting for the pseudo-random draw. Accepted for sandbox merchants only; a
+ * real merchant's outcome always comes from the real call.
+ */
+export const SANDBOX_OUTCOMES = [
+  "confirmed",
+  "no_answer",
+  "counter_offer",
+  "fully_booked",
+  "merchant_declined",
+  "bad_data",
+] as const;
+export type SandboxOutcome = (typeof SANDBOX_OUTCOMES)[number];
+
 export interface SearchFilters {
   neighborhood?: string;
   near?: { lat: number; lng: number; radius_km: number };
@@ -108,6 +125,12 @@ export interface SearchFilters {
   open_at?: string;
   bookable_only?: boolean;
   party_size?: number;
+  /**
+   * Tri-state sandbox filter. `true` = sandbox test merchants only (the
+   * "Stripe test cards" set — safe to book end-to-end), `false` = real
+   * merchants only, omitted = both (the historical default; unchanged).
+   */
+  sandbox?: boolean;
   /** Deterministic ordering (documented, REQ non-ranking): "merchant_id" | "distance" (distance requires `near`). */
   order_by?: "merchant_id" | "distance";
   limit?: number;

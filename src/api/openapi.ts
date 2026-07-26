@@ -11,6 +11,7 @@
  * no ranking language anywhere (REQ-DATA-2).
  */
 import { config } from "../config.js";
+import { SANDBOX_OUTCOMES } from "../registry/types.js";
 
 const merchantSummary = {
   type: "object",
@@ -34,6 +35,11 @@ const merchantSummary = {
       description: "Derived: phone-verified AND accepts phone reservations AND not opted out AND no deposit required.",
     },
     verification_status: { type: "string", enum: ["unverified", "phone_verified", "transaction_verified"] },
+    sandbox: {
+      type: "boolean",
+      description:
+        "Sandbox test merchant: books end-to-end and returns a SIMULATED confirmation, never dialing a real venue. Never present a sandbox confirmation to a user as a real reservation.",
+    },
     distance_km: { type: "number", description: "Present only when a geo filter was supplied." },
   },
 } as const;
@@ -158,6 +164,7 @@ export function buildOpenApi(baseUrl: string) {
             { name: "open_at", in: "query", schema: { type: "string" }, description: "ISO-8601 datetime; only merchants open then. Explicit offset = exact instant (evaluated per merchant timezone); naive = each merchant's local wall clock." },
             { name: "bookable_only", in: "query", schema: { type: "boolean" } },
             { name: "party_size", in: "query", schema: { type: "integer", minimum: 1 } },
+            { name: "sandbox", in: "query", schema: { type: "boolean" }, description: "true = sandbox test merchants only; false = real merchants only; omitted = both." },
             { name: "order_by", in: "query", schema: { type: "string", enum: ["merchant_id", "distance"] } },
             { name: "limit", in: "query", schema: { type: "integer", maximum: config.mcp.searchPageSizeMax } },
             { name: "offset", in: "query", schema: { type: "integer", minimum: 0 } },
@@ -250,6 +257,11 @@ export function buildOpenApi(baseUrl: string) {
                     special_requests: { type: "string", maxLength: config.mcp.specialRequestMaxChars },
                     callback_url: { type: "string", description: "Webhook URL for booking state-change events." },
                     client_reference_id: { type: "string", maxLength: 128, description: "Your unique ID for this booking request (a UUID is ideal). Retrying with the same value returns the existing booking instead of creating a duplicate; scoped per API key." },
+                    sandbox_outcome: {
+                      type: "string",
+                      enum: [...SANDBOX_OUTCOMES],
+                      description: "TEST ONLY, sandbox merchants (sandbox: true): force the simulated call's result so an integration can exercise a chosen branch on demand. Rejected with sandbox_outcome_requires_sandbox_merchant for real merchants. Walkthrough: /demo.",
+                    },
                   },
                 },
               },
@@ -370,6 +382,7 @@ export function v1Index(baseUrl: string) {
       health: `${baseUrl}/healthz`,
       discovery_manifest: `${baseUrl}/.well-known/mcp.json`,
       privacy_policy: `${baseUrl}/privacy`,
+      demo: `${baseUrl}/demo`,
     },
     posture: "Reads free and unauthenticated. Search is filter-based and never ranked. Availability is checked on the call at booking time.",
   };

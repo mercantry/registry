@@ -194,7 +194,7 @@ ${li("No cookies, no analytics, no third-party trackers, no advertising, and no 
 </ul>
 
 <h2>Booking data</h2>
-<p>A booking row stores what fulfillment needs: the merchant, requested time and window, party size, the reservation name, an optional contact for confirmation relay, optional special requests, an optional <code>callback_url</code>, an optional <code>client_reference_id</code> you supply, and the key the booking was made with. Every state transition is timestamped in an append-only event log, and call attempts store the operator, the disposition and the call's transcript lines.</p>
+<p>A booking row stores what fulfillment needs: the merchant, requested time and window, party size, the reservation name, an optional contact for confirmation relay, optional special requests, an optional <code>callback_url</code>, an optional <code>client_reference_id</code> you supply, an optional <code>sandbox_outcome</code> (a test-only instruction, never personal data), and the key the booking was made with. Every state transition is timestamped in an append-only event log, and call attempts store the operator, the disposition and the call's transcript lines.</p>
 <ul>
 ${li("Reservation names and contacts are used only to place and follow up that booking. They are never exposed through any read tool, never included in search results, and never part of any export or dataset release.")}
 ${li(fulfillmentPara)}

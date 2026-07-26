@@ -2,6 +2,8 @@
 
 Written for agents first (REQ-MCP-6): every tool returns structured JSON with a published, versioned schema (`get_registry_meta.schema_version`). Breaking changes bump the version with a 90-day deprecation window (REQ-MCP-1).
 
+Runnable integration snippets — curl, Claude Code/Desktop, raw MCP JSON-RPC, OpenAI Agents SDK, LangChain, webhook receiver — live in [`examples/`](../examples/README.md) and are contract-tested in CI against this surface.
+
 Connect remotely over Streamable HTTP: `POST /mcp` on a deployed instance — live: `claude mcp add --transport http registry https://agentic-commerce-registry.fly.dev/mcp` (see [`deployment.md`](deployment.md)); optional developer key as `Authorization: Bearer reg_…` or `x-api-key`. Connect locally over stdio: `npm run mcp`. HTTP mirror of every tool lives at `/v1` (same JSON shapes; self-serve keys via `POST /v1/keys`; rate limits in `X-RateLimit-*` headers; bulk export at `GET /v1/export/merchants.ndjson`).
 
 ## Read tools
@@ -9,7 +11,9 @@ Connect remotely over Streamable HTTP: `POST /mcp` on a deployed instance — li
 ### `search_merchants`
 Filter-based, **never ranked**. Deterministic order: `merchant_id` ASC by default; `distance` ASC (ties broken by `merchant_id`) when `lat`/`lng` supplied with `order_by: "distance"`.
 
-Filters: `neighborhood`, `lat`+`lng`+`radius_km`, `cuisine_tags` (ANY-match), `attribute_tags` (ALL-match), `price_band_min/max`, `open_at`, `bookable_only`, `party_size`, `limit`/`offset`.
+Filters: `neighborhood`, `lat`+`lng`+`radius_km`, `cuisine_tags` (ANY-match), `attribute_tags` (ALL-match), `price_band_min/max`, `open_at`, `bookable_only`, `party_size`, `sandbox`, `limit`/`offset`.
+
+**Sandbox vs. real:** every result carries `sandbox`. Sandbox merchants are the permanent test set — they book end-to-end and return a **simulated** confirmation, never dialing a real venue. `sandbox: true` returns only those (use it to integration-test the booking loop), `sandbox: false` only real merchants (use it for any booking a human will act on), and omitting it returns both. Never present a sandbox confirmation to a user as a real reservation.
 
 **Timezones (multi-city):** every merchant carries an IANA `timezone` (e.g. `Asia/Tokyo`); per-city zones are listed in `get_registry_meta.cities`. A naive ISO datetime anywhere in the API (`open_at`, booking `datetime`) means the **merchant's local wall time**; an explicit ISO-8601 offset (`2026-07-18T19:00:00+09:00` or trailing `Z`) pins the exact instant. Unparseable `open_at` returns `invalid_open_at`.
 
@@ -48,6 +52,17 @@ Per-city coverage (`cities`: name, IANA timezone, merchant count), bookable coun
 Fulfillment is asynchronous: a call is placed to the merchant (voice agent, human takeover available). `accept_within_window: true` is the recommended default — merchant counter-offers inside `±window_minutes` confirm without a round-trip (REQ-MCP-2). `datetime` is merchant-local when naive (see the timezone note above); an explicit offset is also accepted.
 
 **Retry safety (idempotency):** always send a unique `client_reference_id` (a UUID is ideal; ≤128 chars; REST also accepts an `Idempotency-Key` header). If the call times out or errors ambiguously, retry with the **same** reference — the registry returns the already-created booking (`idempotent_replay: true`, REST 200) instead of double-booking the restaurant. Reusing a reference with *different* parameters is rejected (`client_reference_conflict`, REST 409); use a fresh reference for a genuinely new booking. References are scoped per developer key. Never re-call `place_booking` after a timeout without one.
+
+**Testing against sandbox merchants (`sandbox_outcome`):** sandbox merchants (`sandbox: true`) are the registry's test cards — they complete the whole booking loop and never dial anyone. Add `"sandbox_outcome": "<value>"` to force the simulated call's result instead of taking the pseudo-random draw:
+
+| Value | Result |
+|---|---|
+| `confirmed` | `queued → in_progress → confirmed`, with a confirmation code |
+| `no_answer` | retries up to the attempt cap, then `failed` / `no_answer` |
+| `counter_offer` | two alternative times: auto-confirms inside an authorized window, otherwise pauses in `needs_input` |
+| `fully_booked` · `merchant_declined` · `bad_data` | terminal `failed` with that `failure_reason` |
+
+Omit the field and the outcome is drawn deterministically from the booking id, so any single booking always replays the same way. The field is **sandbox-only**: on a real merchant it is rejected with `sandbox_outcome_requires_sandbox_merchant` rather than ignored — nobody gets to script a real restaurant's answer. An unknown value returns `invalid_sandbox_outcome` with the accepted list. A copy-pasteable walkthrough with live sandbox ids is served at `/demo`.
 
 ### `get_booking_status`
 State machine position: `pending → queued → in_progress → confirmed | failed | needs_input` (plus `cancelled`). Structured outcomes:

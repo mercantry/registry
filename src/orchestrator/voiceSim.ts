@@ -33,13 +33,36 @@ export function outcomeRoll(bookingId: string, attemptNo: number): number {
   return (h >>> 0) / 4294967296;
 }
 
-export function pickOutcome(bookingId: string, attemptNo: number, requestedTime: string): CallOutcome {
+export function pickOutcome(
+  bookingId: string,
+  attemptNo: number,
+  requestedTime: string,
+  /**
+   * Sandbox "test card": when the caller named an outcome on place_booking, the
+   * simulator returns exactly that on every attempt instead of drawing one, so a
+   * demo or an integration test can walk a chosen branch of the state machine.
+   * Only ever set for sandbox merchants (enforced in placeBooking).
+   */
+  forced?: string | null,
+): CallOutcome {
   const roll = outcomeRoll(bookingId, attemptNo);
   const shift = (mins: number) => {
     const d = new Date(requestedTime.endsWith("Z") ? requestedTime : requestedTime + "Z");
     d.setUTCMinutes(d.getUTCMinutes() + mins);
     return d.toISOString().slice(0, 16).replace("T", " ");
   };
+  switch (forced) {
+    case "confirmed":
+      return { kind: "confirmed", confirmed_time: requestedTime };
+    case "no_answer":
+      return { kind: "no_answer" };
+    case "counter_offer":
+      return { kind: "counter_offer", offered_times: [shift(45), shift(90)] };
+    case "fully_booked":
+    case "merchant_declined":
+    case "bad_data":
+      return { kind: "failed", reason: forced };
+  }
   if (roll < 0.12) return { kind: "no_answer" };
   if (roll < 0.7)
     return {
@@ -116,7 +139,7 @@ export function startVoiceCall(
   booking: Row,
   attemptNo: number,
 ): VoiceCallHandle {
-  const outcome = pickOutcome(booking.booking_id, attemptNo, booking.requested_time);
+  const outcome = pickOutcome(booking.booking_id, attemptNo, booking.requested_time, booking.sandbox_outcome);
   const lines = scriptFor(merchantName, booking, outcome);
 
   const done = new Promise<CallOutcome | undefined>((resolve) => {

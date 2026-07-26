@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   notify_issue_closed INTEGER NOT NULL DEFAULT 0,  -- note 004: issue closed on terminal state
   client_reference_id TEXT,                 -- agent-supplied idempotency key: retried place_booking returns this row
   request_fingerprint TEXT,                 -- hash of the original request; a replay must match or is rejected
+  sandbox_outcome  TEXT,                    -- sandbox merchants only: caller-forced simulated call result (NULL = drawn)
   created_at       TEXT NOT NULL,
   updated_at       TEXT NOT NULL
 );
