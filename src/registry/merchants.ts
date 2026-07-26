@@ -549,7 +549,18 @@ function dataFreshness(db: Database) {
   ).map((r) => {
     const manifest = JSON.parse(r.manifest_json as string) as {
       field_coverage?: Record<string, number>;
-      diff_vs_previous?: { added: number; removed: number; changed: number; unchanged: number } | null;
+      diff_vs_previous?: {
+        added: number;
+        removed: number;
+        changed: number;
+        unchanged: number;
+        removed_breakdown?: {
+          rebranded: number;
+          moved_or_rekeyed: number;
+          absent: number;
+          added_matched_to_removed: number;
+        } | null;
+      } | null;
     };
     const diff = manifest.diff_vs_previous ?? null;
     return {
@@ -564,8 +575,19 @@ function dataFreshness(db: Database) {
         Math.floor((Date.now() - Date.parse(`${r.generated_at}T00:00:00Z`)) / dayMs),
       ),
       field_coverage: manifest.field_coverage ?? null,
+      // `removed` counts retired merchant_ids, not departed venues: ids are
+      // derived from name + rounded geo, so a rename or a geo nudge retires one
+      // and mints another. Serving the count alone invites exactly the reading
+      // it can't support, so the decomposition rides along whenever the
+      // manifest carries it (releases imported before it existed report null).
       churn_vs_previous_release: diff
-        ? { added: diff.added, removed: diff.removed, changed: diff.changed, unchanged: diff.unchanged }
+        ? {
+            added: diff.added,
+            removed: diff.removed,
+            changed: diff.changed,
+            unchanged: diff.unchanged,
+            removed_breakdown: diff.removed_breakdown ?? null,
+          }
         : null,
     };
   });

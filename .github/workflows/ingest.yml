@@ -129,3 +129,43 @@ jobs:
           name: release-${{ matrix.city }}
           path: data/releases/
           retention-days: 30
+
+      # Sessions can't download artifact blobs (egress) and the full manifest
+      # only reaches the job *summary*, which the API doesn't expose either — so
+      # the numbers a cycle actually reports have to be in the job LOG. They are,
+      # but several hundred lines back behind the tranche packet and QA sample,
+      # which makes every read expensive. This marker repeats just the headline
+      # stats as the last thing the job prints, so a cold session can tail a few
+      # lines instead of the whole log. Same BEGIN/END marker convention as
+      # QA_REPORT and TRANCHE_PACKET.
+      - name: Manifest stats (compact, log-readable)
+        if: always()
+        run: |
+          RELEASE_DIR=$(ls -d data/releases/*-${{ matrix.city }} 2>/dev/null | tail -1)
+          if [ -z "$RELEASE_DIR" ]; then
+            echo "MANIFEST_STATS_BEGIN ${{ matrix.city }}"
+            echo "no release produced — pipeline did not reach writeRelease"
+            echo "MANIFEST_STATS_END ${{ matrix.city }}"
+            exit 0
+          fi
+          echo "MANIFEST_STATS_BEGIN ${{ matrix.city }}"
+          node -e '
+            // require() resolves a bare relative path as a module id, not a
+            // file — the release dir arrives relative, so make it absolute.
+            const m = require(require("path").resolve(process.argv[1], "manifest.json"));
+            const d = m.diff_vs_previous;
+            const out = {
+              release: m.release, merchant_count: m.merchant_count,
+              checksum_sha256: m.checksum_sha256,
+              dropped: m.dropped, field_coverage: m.field_coverage,
+              official: m.official, source_agreement: m.source_agreement,
+              diff_vs_previous: d,
+            };
+            console.log(JSON.stringify(out, null, 1));
+            if (d) {
+              const b = d.removed_breakdown;
+              const pct = (n) => (d.removed === 0 ? "0%" : (100 * n / d.removed).toFixed(1) + "%");
+              console.log(`REMOVED_DECOMPOSITION removed=${d.removed} rebranded=${b.rebranded} (${pct(b.rebranded)}) moved_or_rekeyed=${b.moved_or_rekeyed} (${pct(b.moved_or_rekeyed)}) absent=${b.absent} (${pct(b.absent)}) added=${d.added} added_consumed=${b.added_matched_to_removed}`);
+            }
+          ' "$RELEASE_DIR"
+          echo "MANIFEST_STATS_END ${{ matrix.city }}"

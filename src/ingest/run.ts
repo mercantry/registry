@@ -168,6 +168,17 @@ async function main() {
       } else {
         diffVsPrevious = diffReleases(previous, merchants);
         console.log(`[${city.key}] diff vs ${previous.manifest.release}: ${JSON.stringify(diffVsPrevious)}`);
+        // Read this line before trusting `removed` as anything: it says how
+        // much of the removed side is identity churn (a venue that is still in
+        // the corpus under a new merchant_id) versus records with no successor
+        // at all — the only closure candidates, and still not closures.
+        const b = diffVsPrevious.removed_breakdown;
+        const pct = (n: number) => (diffVsPrevious!.removed === 0 ? "0%" : `${((100 * n) / diffVsPrevious!.removed).toFixed(1)}%`);
+        console.log(
+          `[${city.key}] removed ${diffVsPrevious.removed} decomposes: rebranded ${b.rebranded} (${pct(b.rebranded)}) · ` +
+            `moved_or_rekeyed ${b.moved_or_rekeyed} (${pct(b.moved_or_rekeyed)}) · absent ${b.absent} (${pct(b.absent)}) · ` +
+            `added consumed as successors ${b.added_matched_to_removed}/${diffVsPrevious.added}`,
+        );
       }
     } catch (err) {
       // Fail-open (ABR lesson): an unreadable previous degrades to a

@@ -337,6 +337,23 @@ test("release diff: added/removed/changed/unchanged; id churn on rename; alias o
   assert.equal(diff.field_changes.phone_primary, 1);
   assert.equal(diff.field_changes.aliases, 0);
 
+  // Array identity must not be ambiguous. `arrayKey` joins on a separator that
+  // cannot appear inside an element; a space would make these two alias lists
+  // produce the same key ("dim sum house") and silently report a real change as
+  // unchanged. Pins the separator: this regressed once, invisibly, because a raw
+  // NUL byte in diff.ts made git render the file as binary and suppress the diff.
+  const retokenized = make(line("g1", "Alpha House", 114.16, 22.28));
+  const before = make(line("g1", "Alpha House", 114.16, 22.28));
+  before[0].aliases = ["dim sum", "house"];
+  retokenized[0].aliases = ["dim", "sum house"];
+  const aliasDiff = diffReleases({ manifest: previous.manifest, merchants: before }, retokenized);
+  assert.deepEqual(
+    { added: aliasDiff.added, removed: aliasDiff.removed, changed: aliasDiff.changed, unchanged: aliasDiff.unchanged },
+    { added: 0, removed: 0, changed: 1, unchanged: 0 },
+    "re-tokenized aliases must count as a change, not collide into `unchanged`",
+  );
+  assert.equal(aliasDiff.field_changes.aliases, 1);
+
   // A rename re-derives merchant_id: churn (add+remove), never a field change.
   const renamed = make(line("g1", "Alpha House Renamed", 114.16, 22.28));
   const renameDiff = diffReleases({ manifest: previous.manifest, merchants: [previous.merchants.find((m) => m.name === "Alpha House")!] }, renamed);
@@ -344,6 +361,87 @@ test("release diff: added/removed/changed/unchanged; id churn on rename; alias o
     { added: renameDiff.added, removed: renameDiff.removed, changed: renameDiff.changed },
     { added: 1, removed: 1, changed: 0 },
   );
+});
+
+test("removed_breakdown: identity churn is separated from records with no successor", () => {
+  const drops = freshDrops();
+  // Distinct phone/address per record by default, so proximity alone never
+  // pairs two unrelated venues — the rebrand rule has to earn each match.
+  const line = (
+    id: string,
+    name: string,
+    lng: number,
+    lat: number,
+    over: { phone?: string | null; address?: string } = {},
+  ) =>
+    overtureLine({
+      id,
+      names: { primary: name },
+      phones: over.phone === undefined ? [`+8522820${id.padStart(4, "0").slice(-4)}`] : over.phone === null ? [] : [over.phone],
+      addresses: [{ freeform: over.address ?? `${id} Finance St`, locality: "Central" }],
+    }).replace('"coordinates":[114.158,22.281]', `"coordinates":[${lng},${lat}]`);
+  const make = (...lines: string[]) =>
+    toReleaseMerchants(HK, dedupeStaged(lines.map((l) => parseOvertureFeatureLine(l, HK, STAMP, drops)!)));
+  const prev = (...lines: string[]) => ({
+    manifest: { release: "2026-07-17-hk", checksum_sha256: "prevsum" } as never,
+    merchants: make(...lines),
+  });
+
+  // 1. Geo nudge across the ~110 m id-rounding boundary: 114.1600 → 114.1606
+  // re-keys the merchant_id (114.160 vs 114.161) while moving the venue ~62 m.
+  // Same name nearby ⇒ moved_or_rekeyed, not a closure.
+  const nudged = diffReleases(prev(line("1", "Alpha House", 114.16, 22.28)), make(line("1", "Alpha House", 114.1606, 22.28)));
+  assert.deepEqual({ added: nudged.added, removed: nudged.removed }, { added: 1, removed: 1 });
+  assert.deepEqual(nudged.removed_breakdown, { rebranded: 0, moved_or_rekeyed: 1, absent: 0, added_matched_to_removed: 1 });
+
+  // 2. Same premises re-badged: different name at the same coordinates, but the
+  // phone carries over ⇒ rebranded. Phone/address identity is what makes this
+  // safe; proximity alone is not evidence.
+  const rebrand = diffReleases(
+    prev(line("2", "Beta Kitchen", 114.17, 22.29, { phone: "+85229990001" })),
+    make(line("9", "Beta Kitchen Rebranded", 114.17, 22.29, { phone: "+85229990001" })),
+  );
+  assert.deepEqual(rebrand.removed_breakdown, { rebranded: 1, moved_or_rekeyed: 0, absent: 0, added_matched_to_removed: 1 });
+
+  // 3. The conservative guard: a different name at the same site with neither
+  // the phone nor the address in common is a *different venue*, so the removal
+  // stays unexplained rather than being written off as churn.
+  const neighbor = diffReleases(
+    prev(line("3", "Gamma Noodles", 114.18, 22.3, { phone: "+85229990002", address: "3 Finance St" })),
+    make(line("8", "Unrelated Cafe", 114.18, 22.3, { phone: "+85229990003", address: "8 Queens Rd" })),
+  );
+  assert.deepEqual(neighbor.removed_breakdown, { rebranded: 0, moved_or_rekeyed: 0, absent: 1, added_matched_to_removed: 0 });
+
+  // 4. Same name but 1.1 km away is beyond SAME_NAME_KM — a different branch of
+  // the chain, not the same venue re-keyed.
+  const farBranch = diffReleases(prev(line("4", "Delta Diner", 114.19, 22.31)), make(line("7", "Delta Diner", 114.2, 22.315)));
+  assert.deepEqual(farBranch.removed_breakdown, { rebranded: 0, moved_or_rekeyed: 0, absent: 1, added_matched_to_removed: 0 });
+
+  // 5. A single added record can explain at most one removal, so the breakdown
+  // can never over-explain `removed`: two same-name removals, one successor.
+  // The two are ~620 m apart so upstream dedupe keeps them distinct, and the
+  // successor sits ~310 m from each — inside SAME_NAME_KM for both.
+  const contested = diffReleases(
+    prev(line("5", "Echo Bar", 114.15, 22.27), line("6", "Echo Bar", 114.156, 22.27)),
+    make(line("0", "Echo Bar", 114.153, 22.27)),
+  );
+  assert.equal(contested.removed, 2);
+  assert.deepEqual(contested.removed_breakdown, { rebranded: 0, moved_or_rekeyed: 1, absent: 1, added_matched_to_removed: 1 });
+
+  // 6. Radius coverage: a same-name successor ~460 m out is inside
+  // SAME_NAME_KM and must be found. Pins the spatial shortlist to the declared
+  // radius — a cell window that reached less far would silently call this
+  // `absent` while the documented rule says it is churn.
+  const farEdge = diffReleases(prev(line("11", "Foxtrot Grill", 114.14, 22.26)), make(line("12", "Foxtrot Grill", 114.1445, 22.26)));
+  assert.deepEqual(farEdge.removed_breakdown, { rebranded: 0, moved_or_rekeyed: 1, absent: 0, added_matched_to_removed: 1 });
+
+  // 7. The invariant every consumer relies on: the three causes partition
+  // `removed` exactly, and successors never exceed the added side.
+  for (const d of [nudged, rebrand, neighbor, farBranch, contested, farEdge]) {
+    const b = d.removed_breakdown;
+    assert.equal(b.rebranded + b.moved_or_rekeyed + b.absent, d.removed);
+    assert.ok(b.added_matched_to_removed <= d.added);
+  }
 });
 
 test("provenance rows keep each merged ref's own retrieval time", () => {

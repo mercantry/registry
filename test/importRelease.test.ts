@@ -43,10 +43,16 @@ function releaseMerchant(over: Partial<ReleaseMerchant> & { merchant_id: string;
   };
 }
 
-function writeRelease(merchants: ReleaseMerchant[], tamper = false, generatedAt = "2026-07-16"): string {
+function writeRelease(
+  merchants: ReleaseMerchant[],
+  tamper = false,
+  generatedAt = "2026-07-16",
+  diffVsPrevious: ReleaseManifest["diff_vs_previous"] = undefined as never,
+): string {
   const dir = mkdtempSync(join(tmpdir(), "import-"));
   const ndjson = merchants.map((m) => JSON.stringify(m)).join("\n") + "\n";
   const manifest: Partial<ReleaseManifest> = {
+    ...(diffVsPrevious === undefined ? {} : { diff_vs_previous: diffVsPrevious }),
     release: "2026-07-16-hk",
     city: "Hong Kong",
     city_key: "hk",
@@ -285,6 +291,56 @@ test("registry meta: data block serves release provenance, record age, and confl
   assert.ok(typeof meta.data.record_age_days.p50 === "number");
   assert.equal(meta.data.source_phone_conflicts, 0);
   assert.equal(meta.data.verified_field_changes, 0);
+});
+
+test("registry meta: served churn carries the removal decomposition, and stays null-safe for pre-breakdown releases", async () => {
+  const { registryMeta } = await import("../src/registry/merchants.js");
+
+  // A release whose manifest carries the decomposition: agents get the reason
+  // the ids are gone, not just the count. `removed` alone reads as closures and
+  // cannot support that — ids retire on rename and on geo re-keying.
+  const db = openTestDb();
+  await importRelease(
+    db,
+    writeRelease([releaseMerchant({ merchant_id: "aaaaaaaa-0000-4000-8000-000000000001", name: "A" })], false, "2026-07-16", {
+      previous_release: "2026-07-15-hk",
+      previous_checksum_sha256: "prev",
+      previous_merchant_count: 10,
+      added: 4,
+      removed: 6,
+      changed: 1,
+      unchanged: 3,
+      field_changes: { phone_primary: 0, website: 0, address: 0, neighborhood: 0, aliases: 0, cuisine_tags: 0 },
+      removed_breakdown: { rebranded: 1, moved_or_rekeyed: 3, absent: 2, added_matched_to_removed: 4 },
+    }),
+  );
+  const churn = (registryMeta(db) as any).data.releases[0].churn_vs_previous_release;
+  assert.equal(churn.removed, 6);
+  assert.deepEqual(churn.removed_breakdown, { rebranded: 1, moved_or_rekeyed: 3, absent: 2, added_matched_to_removed: 4 });
+  // The buckets must account for `removed` exactly, or the served numbers lie.
+  const b = churn.removed_breakdown;
+  assert.equal(b.rebranded + b.moved_or_rekeyed + b.absent, churn.removed);
+
+  // A release imported before the decomposition existed (live volume's stored
+  // manifests) still serves the counts, with the breakdown explicitly null —
+  // never a fabricated zero, which would read as "no churn, all closures".
+  const old = openTestDb();
+  await importRelease(
+    old,
+    writeRelease([releaseMerchant({ merchant_id: "aaaaaaaa-0000-4000-8000-000000000001", name: "A" })], false, "2026-07-16", {
+      previous_release: "2026-07-15-hk",
+      previous_checksum_sha256: "prev",
+      previous_merchant_count: 10,
+      added: 4,
+      removed: 6,
+      changed: 1,
+      unchanged: 3,
+      field_changes: { phone_primary: 0, website: 0, address: 0, neighborhood: 0, aliases: 0, cuisine_tags: 0 },
+    } as never),
+  );
+  const oldChurn = (registryMeta(old) as any).data.releases[0].churn_vs_previous_release;
+  assert.equal(oldChurn.removed, 6);
+  assert.equal(oldChurn.removed_breakdown, null);
 });
 
 test("import: refuses checksum mismatch and verification claims", async () => {

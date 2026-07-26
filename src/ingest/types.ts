@@ -190,6 +190,11 @@ export interface ReleaseDiff {
   previous_checksum_sha256: string;
   previous_merchant_count: number;
   added: number;
+  /**
+   * merchant_ids in the previous release and not this one. NOT a closure count:
+   * merchant_id is derived from name + ~110 m-rounded geo, so renames and geo
+   * nudges retire ids for venues that never left. See `removed_breakdown`.
+   */
   removed: number;
   changed: number;
   unchanged: number;
@@ -200,6 +205,23 @@ export interface ReleaseDiff {
     neighborhood: number;
     aliases: number;
     cuisine_tags: number;
+  };
+  /**
+   * Why the removed ids are gone, by affirmative evidence from the added side.
+   * `rebranded` + `moved_or_rekeyed` + `absent` === `removed` by construction.
+   * Only `absent` records are closure *candidates*, and even they still include
+   * hygiene-filter drops and source snapshot gaps — persistence across
+   * consecutive releases is what a closure signal has to be built on.
+   */
+  removed_breakdown: {
+    /** Same site (≤150 m), different name, same phone or identical address — re-badged premises. */
+    rebranded: number;
+    /** Same normalized name within 500 m — the id was re-keyed by a geo nudge, or the venue moved a block. */
+    moved_or_rekeyed: number;
+    /** No successor in the added side. Closure candidate, not a closure. */
+    absent: number;
+    /** Added records consumed as successors (each explains at most one removal). */
+    added_matched_to_removed: number;
   };
 }
 
